@@ -32,7 +32,6 @@ class TerraformPipeline:
                 f'provider "aws" {{ region = "{region}" }}\n'
             )
 
-        # Backend local — sem S3, funciona sem credenciais (plan only)
         return (
             "terraform {\n"
             "  required_providers {\n"
@@ -43,10 +42,6 @@ class TerraformPipeline:
         )
 
     async def run(self, data: dict, action: str):
-        """
-        Generator assíncrono que emite eventos SSE durante o pipeline.
-        Yields strings no formato "data: {json}\n\n".
-        """
         run_id    = str(uuid.uuid4())[:8]
         workdir   = Path(f"/tmp/tf-{run_id}")
         plan_file = workdir / "tfplan"
@@ -56,7 +51,6 @@ class TerraformPipeline:
             return f"data: {json.dumps({'step': step, 'msg': msg})}\n\n"
 
         try:
-            # ── Escrever arquivos ─────────────────────────────────────────
             region = data.get("provider_region", self.aws_region)
             (workdir / "backend.tf").write_text(self._backend_tf(region, run_id))
 
@@ -64,9 +58,9 @@ class TerraformPipeline:
                 if f["conteudo"].strip():
                     (workdir / f["path"]).write_text(f["conteudo"])
 
-            print(f"[{run_id}] workdir: {list(workdir.iterdir())}", flush=True)
+            print(f"[{run_id}] action={action} workdir={list(workdir.iterdir())}", flush=True)
 
-            # ── terraform init ────────────────────────────────────────────
+            # ── terraform init ────────────────────────────────────────
             yield event("init", "terraform init...")
             rc = 0
             async for line, rc in self._run_cmd(
@@ -79,7 +73,35 @@ class TerraformPipeline:
                 yield event("error", "terraform init falhou.")
                 return
 
-            # ── terraform validate ────────────────────────────────────────
+            # ── DELETE: terraform destroy ─────────────────────────────
+            if action == "delete":
+                yield event("destroy", "Executando terraform destroy...")
+
+                # plan do destroy para mostrar o que será removido
+                async for line, rc in self._run_cmd(
+                        ["terraform", "plan", "-destroy", "-no-color",
+                         f"-out={plan_file}"], workdir):
+                    if line:
+                        print(f"[{run_id}] DESTROY-PLAN: {line}", flush=True)
+                        yield event("plan_out", line)
+
+                if rc != 0:
+                    yield event("error", "terraform plan -destroy falhou.")
+                    return
+
+                yield event("destroy_confirm", "Plan de destruição gerado. Aplicando...")
+
+                async for line, rc in self._run_cmd(
+                        ["terraform", "apply", "-destroy", "-no-color",
+                         "-auto-approve", str(plan_file)], workdir):
+                    if line:
+                        print(f"[{run_id}] DESTROY: {line}", flush=True)
+                        yield event("apply_out", line)
+
+                yield event("done", "Recurso destruído com sucesso.")
+                return
+
+            # ── terraform validate ────────────────────────────────────
             rc = 0
             async for line, rc in self._run_cmd(
                     ["terraform", "validate", "-no-color"], workdir):
@@ -88,10 +110,10 @@ class TerraformPipeline:
                     yield event("init_out", line)
 
             if rc != 0:
-                yield event("error", "HCL invalido — veja os erros no terminal.")
+                yield event("error", "HCL invalido.")
                 return
 
-            # ── terraform plan ────────────────────────────────────────────
+            # ── terraform plan ────────────────────────────────────────
             yield event("plan", "terraform plan...")
             rc = 0
             async for line, rc in self._run_cmd(
@@ -105,10 +127,10 @@ class TerraformPipeline:
                 return
 
             if action != "apply":
-                yield event("plan_done", "Plan concluido. Clique em Aplicar na AWS para criar.")
+                yield event("plan_done", "Plan concluido. Use action=apply para criar.")
                 return
 
-            # ── terraform apply ───────────────────────────────────────────
+            # ── terraform apply ───────────────────────────────────────
             yield event("apply", "Aplicando na AWS...")
             async for line, rc in self._run_cmd(
                     ["terraform", "apply", "-no-color", "-auto-approve",
@@ -131,7 +153,6 @@ class TerraformPipeline:
 
     @staticmethod
     async def _run_cmd(cmd: list, cwd: Path):
-        """Executa comando e faz yield de (linha, exit_code)."""
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(cwd),
