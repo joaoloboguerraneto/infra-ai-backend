@@ -26,6 +26,7 @@ pipeline  = TerraformPipeline(state_bucket=TF_STATE_BUCKET, aws_region=AWS_REGIO
 class ActionEnum(str, Enum):
     plan  = "plan"
     apply = "apply"
+    delete = "delete"
 
 
 class GenerateRequest(BaseModel):
@@ -274,7 +275,13 @@ async def _stream(prompt: str, model: str, action: str):
 
     rtype  = extracted.get("type", "")
     params = extracted.get("params", {})
-    print(f"type={rtype} params={params}", flush=True)
+
+    # Intenção de deleção detectada no prompt sobrescreve o action
+    if extracted.get("delete_intent") and action != "delete":
+        print(f"delete_intent detectado no prompt — forçando action=delete", flush=True)
+        action = "delete"
+
+    print(f"type={rtype} params={params} action={action}", flush=True)
 
     if rtype not in REGISTRY:
         supported = ", ".join(REGISTRY.keys())

@@ -6,40 +6,35 @@ class TerraformTemplate(ABC):
     """
     Classe base para templates de recursos Terraform.
     Para adicionar um novo recurso: crie um arquivo em templates/,
-    herde desta classe e implemente name, description e render().
-    O registro é automático via TerraformTemplate.__subclasses__().
+    herde desta classe e implemente name, description, render() e import_map().
     """
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """Identificador do tipo, ex: 's3_bucket'."""
         ...
 
     @property
     @abstractmethod
     def description(self) -> str:
-        """Descrição curta para o modelo LLM."""
         ...
 
     @abstractmethod
     def render(self, params: dict) -> dict:
-        """
-        Recebe os parâmetros extraídos pelo LLM e retorna:
-        {
-          "recurso":  str,
-          "resumo":   str,
-          "provider_region": str,
-          "arquivos": [{"path": str, "conteudo": str}]
-        }
-        """
         ...
 
-    # ── Utilitários compartilhados ──────────────────────────────────────────
+    def import_map(self, params: dict) -> list:
+        """
+        Retorna lista de recursos a importar quando state estiver vazio.
+        Cada item: {"address": "aws_s3_bucket.lb", "id": "nome-do-bucket"}
+
+        O pipeline chama isso automaticamente no delete quando detecta
+        state vazio — recurso criado fora deste pipeline ou run_id diferente.
+        """
+        return []
 
     @staticmethod
     def label(name: str) -> str:
-        """Converte nome em label HCL válido: 'meu-bucket' -> 'meu_bucket'."""
         return re.sub(r'[^a-z0-9_]', '_', name.lower())
 
     COMMON_TAGS = '''\

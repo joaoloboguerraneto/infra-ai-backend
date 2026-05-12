@@ -61,3 +61,17 @@ output "bucket_arn" {{
                 {"path": "outputs.tf", "conteudo": outputs},
             ],
         }
+
+    def import_map(self, params: dict) -> list:
+        """
+        Mapeia todos os recursos S3 para import automático.
+        O bucket principal é obrigatório; os sub-recursos usam o mesmo ID.
+        """
+        nome = params.get("nome", "meu-bucket")
+        lb   = self.label(nome)
+        return [
+            {"address": f"aws_s3_bucket.{lb}",                                    "id": nome},
+            {"address": f"aws_s3_bucket_versioning.{lb}",                         "id": nome},
+            {"address": f"aws_s3_bucket_server_side_encryption_configuration.{lb}","id": nome},
+            {"address": f"aws_s3_bucket_public_access_block.{lb}",                "id": nome},
+        ]
