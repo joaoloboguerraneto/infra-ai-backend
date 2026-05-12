@@ -81,3 +81,13 @@ output "lambda_name" {{
                 {"path": "outputs.tf", "conteudo": outputs},
             ],
         }
+
+    def import_map(self, params: dict) -> list:
+        """Lambda tem multiplos sub-recursos — importar todos para destroy completo."""
+        nome = params.get("nome", "minha-lambda")
+        lb   = self.label(nome)
+        return [
+            {"address": f"aws_lambda_function.{lb}",              "id": nome},
+            {"address": f"aws_iam_role.{lb}",                     "id": f"{nome}-role"},
+            {"address": f"aws_cloudwatch_log_group.{lb}",         "id": f"/aws/lambda/{nome}"},
+        ]

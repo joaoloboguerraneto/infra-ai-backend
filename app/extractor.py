@@ -2,6 +2,11 @@ import json
 import re
 import httpx
 
+DEAD_LETTER_KEYWORDS = [
+    "dead letter", "dead-letter", "dlq", "fila morta",
+    "redrive", "letra morta",
+]
+
 DELETE_KEYWORDS = [
     "delete", "deletar", "remover", "remove",
     "destruir", "destroy", "apagar", "excluir",
@@ -30,13 +35,16 @@ def detect_delete_intent(prompt: str) -> bool:
     return any(keyword in prompt_lower for keyword in DELETE_KEYWORDS)
 
 
+def detect_dead_letter(prompt: str) -> bool:
+    prompt_lower = prompt.lower()
+    return any(keyword in prompt_lower for keyword in DEAD_LETTER_KEYWORDS)
+
+
 def fix_json(raw: str) -> str:
     """Corrige problemas comuns no JSON retornado pelo modelo."""
     clean = re.sub(r"```(?:json)?|```", "", raw).strip()
 
-    # Remover chaves/colchetes extras no final
-    # Ex: {...}} -> {...}
-    # Conta abertura e fechamento de chaves
+    # Remover chaves extras no final contando profundidade
     depth = 0
     end   = 0
     for i, ch in enumerate(clean):
@@ -55,17 +63,13 @@ def fix_json(raw: str) -> str:
 
 
 def normalize(data: dict) -> dict:
-    """
-    Garante que region e outros campos soltos fiquem dentro de params.
-    Modelo às vezes coloca region no nível raiz em vez de dentro de params.
-    """
+    """Garante que campos soltos fiquem dentro de params."""
     params = data.get("params", {})
 
     for field in ("region", "nome", "runtime", "memory", "dead_letter"):
         if field in data and field not in params:
             params[field] = data.pop(field)
 
-    # region padrão se não veio
     if "region" not in params:
         params["region"] = "us-east-1"
 
@@ -74,7 +78,7 @@ def normalize(data: dict) -> dict:
 
 
 class LLMExtractor:
-    def __init__(self, ollama_url: str, supported_types: list[str]):
+    def __init__(self, ollama_url: str, supported_types: list):
         self.ollama_url    = ollama_url
         self.system_prompt = EXTRACT_PROMPT_TEMPLATE.format(
             types=", ".join(supported_types)
@@ -85,8 +89,8 @@ class LLMExtractor:
             res = await client.post(
                 f"{self.ollama_url}/v1/chat/completions",
                 json={
-                    "model":  model,
-                    "stream": False,
+                    "model":   model,
+                    "stream":  False,
                     "messages": [
                         {"role": "system", "content": self.system_prompt},
                         {"role": "user",   "content": prompt},
@@ -104,10 +108,16 @@ class LLMExtractor:
         try:
             result = json.loads(clean)
         except json.JSONDecodeError as e:
-            raise ValueError(f"JSON invalido mesmo apos fix: {clean[:300]}") from e
+            raise ValueError(f"JSON invalido: {clean[:300]}") from e
 
         result = normalize(result)
+
+        # Detecção por keywords — mais confiável que depender do LLM
         result["delete_intent"] = detect_delete_intent(prompt)
+
+        # dead_letter: LLM frequentemente esquece — detectar direto no prompt
+        if detect_dead_letter(prompt):
+            result["params"]["dead_letter"] = True
 
         print(f"[extractor] final: {result}", flush=True)
         return result

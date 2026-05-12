@@ -26,15 +26,18 @@ class TerraformTemplate(ABC):
     def import_map(self, params: dict) -> list:
         """
         Retorna lista de recursos a importar quando state estiver vazio.
-        Cada item: {"address": "aws_s3_bucket.lb", "id": "nome-do-bucket"}
+        Cada item: {"address": "aws_resource.label", "id": "aws-resource-id"}
 
         O pipeline chama isso automaticamente no delete quando detecta
-        state vazio — recurso criado fora deste pipeline ou run_id diferente.
+        state vazio — recurso criado fora deste pipeline ou com run_id diferente.
+
+        Subclasses devem sobrescrever este método.
         """
         return []
 
     @staticmethod
     def label(name: str) -> str:
+        """'meu-bucket' -> 'meu_bucket'"""
         return re.sub(r'[^a-z0-9_]', '_', name.lower())
 
     COMMON_TAGS = '''\

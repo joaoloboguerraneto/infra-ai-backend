@@ -14,24 +14,27 @@ class TerraformPipeline:
 
     def _state_key(self, data: dict) -> str:
         """
-        Chave determinística: poc/<tipo>/<nome>/terraform.tfstate
-        Mesma chave no create e no delete — nunca perde o state.
+        Chave determinística: poc/{tipo}/{nome}/terraform.tfstate
+
+        Estrutura no S3:
+          poc/
+            s3_bucket/
+              unicred-poc/terraform.tfstate
+            sqs_queue/
+              eventos-pix/terraform.tfstate
+            lambda_function/
+              processador-ted/terraform.tfstate
+
+        Create e delete sempre usam a mesma chave — nunca perde o state.
         """
         resource_type = data.get("recurso", "unknown").lower().replace(" ", "_")
-        nome = "default"
-        for f in data.get("arquivos", []):
-            if f["path"] == "main.tf":
-                for pattern in [
-                    r'bucket\s*=\s*"([^"]+)"',
-                    r'function_name\s*=\s*"([^"]+)"',
-                    r'name\s*=\s*"([^"]+)"',
-                ]:
-                    m = re.search(pattern, f["conteudo"])
-                    if m:
-                        nome = m.group(1)
-                        break
-                break
-        return f"poc/{resource_type}/{nome}/terraform.tfstate"
+
+        # Nome vindo direto dos params (mais confiável que parsear HCL)
+        params    = data.get("_params", {})
+        nome      = params.get("nome") or params.get("function_name") or "default"
+        nome_safe = re.sub(r'[^a-z0-9_-]', '-', nome.lower())
+
+        return f"poc/{resource_type}/{nome_safe}/terraform.tfstate"
 
     def _backend_tf(self, region: str, state_key: str) -> str:
         has_creds = bool(os.getenv("AWS_ACCESS_KEY_ID") or os.getenv("AWS_ROLE_ARN"))
@@ -62,10 +65,10 @@ class TerraformPipeline:
             f'provider "aws" {{ region = "{region}" }}\n'
         )
 
-    async def _auto_import(self, import_map: list, workdir: Path, run_id: str):
+    async def _auto_import(self, import_map: list, workdir: Path, run_id: str) -> list:
         """
         Importa recursos para o state automaticamente.
-        Ignora erros de recursos que não existem na AWS (import falha silenciosamente).
+        Falhas individuais são ignoradas — só falha se nenhum importar.
         """
         results = []
         for item in import_map:
@@ -81,16 +84,15 @@ class TerraformPipeline:
                     lines.append(line)
                     print(f"[{run_id}] IMPORT-OUT: {line}", flush=True)
 
-            success = rc == 0
             results.append({
                 "address": address,
                 "id":      res_id,
-                "success": success,
+                "success": rc == 0,
                 "output":  lines,
             })
 
         imported = sum(1 for r in results if r["success"])
-        print(f"[{run_id}] IMPORT: {imported}/{len(results)} recursos importados", flush=True)
+        print(f"[{run_id}] IMPORT: {imported}/{len(results)} importados", flush=True)
         return results
 
     async def run(self, data: dict, action: str, template=None):
@@ -105,8 +107,10 @@ class TerraformPipeline:
         try:
             region    = data.get("provider_region", self.aws_region)
             state_key = self._state_key(data)
+            params    = data.get("_params", {})
 
             print(f"[{run_id}] action={action} state_key={state_key}", flush=True)
+            print(f"[{run_id}] params={params} template={template}", flush=True)
 
             (workdir / "backend.tf").write_text(self._backend_tf(region, state_key))
             for f in data["arquivos"]:
@@ -128,9 +132,9 @@ class TerraformPipeline:
 
             # ── DELETE ────────────────────────────────────────────────
             if action == "delete":
-                yield event("destroy", f"Verificando state ({state_key})...")
+                yield event("destroy", f"Verificando state...")
 
-                # Plan -destroy para ver se o state tem alguma coisa
+                # Plan -destroy completo sem break
                 plan_output = []
                 rc = 0
                 async for line, rc in self._run_cmd(
@@ -141,46 +145,53 @@ class TerraformPipeline:
                         print(f"[{run_id}] DESTROY-PLAN: {line}", flush=True)
                         yield event("plan_out", line)
 
+                print(f"[{run_id}] plan -destroy rc={rc}", flush=True)
+
                 state_empty = any(
-                    "No objects need to be destroyed" in l or
-                    "No changes" in l
+                    "No objects need to be destroyed" in l or "No changes" in l
                     for l in plan_output
                 )
+                print(f"[{run_id}] state_empty={state_empty} template={template is not None}", flush=True)
 
-                # State vazio — importar automaticamente antes de destruir
-                if state_empty and template is not None:
-                    import_map = template.import_map(data.get("_params", {}))
-                    if import_map:
-                        yield event("plan_out",
-                            f"State vazio — importando {len(import_map)} recurso(s) automaticamente...")
+                if state_empty:
+                    if template is None:
+                        yield event("error", "State vazio e template nao disponivel para import.")
+                        return
 
-                        results = await self._auto_import(import_map, workdir, run_id)
-                        for r in results:
-                            status = "OK" if r["success"] else "SKIP"
-                            yield event("plan_out", f"[{status}] {r['address']} <- {r['id']}")
+                    import_map = template.import_map(params)
+                    print(f"[{run_id}] import_map={import_map}", flush=True)
 
-                        imported = sum(1 for r in results if r["success"])
-                        if imported == 0:
-                            yield event("error",
-                                "Nenhum recurso encontrado na AWS para importar. "
-                                "Verifique o nome e a region.")
-                            return
+                    if not import_map:
+                        yield event("error", "State vazio e import_map vazio para este recurso.")
+                        return
 
-                        # Novo plan -destroy após import
-                        yield event("plan_out", "Re-executando plan -destroy apos import...")
-                        async for line, rc in self._run_cmd(
-                                ["terraform", "plan", "-destroy", "-no-color",
-                                 f"-out={plan_file}"], workdir):
-                            if line:
-                                print(f"[{run_id}] DESTROY-PLAN2: {line}", flush=True)
-                                yield event("plan_out", line)
+                    yield event("plan_out",
+                        f"State vazio — importando {len(import_map)} recurso(s)...")
 
-                        if rc != 0:
-                            yield event("error", "terraform plan -destroy falhou apos import.")
-                            return
-                    else:
+                    results = await self._auto_import(import_map, workdir, run_id)
+                    for r in results:
+                        status = "OK" if r["success"] else "SKIP"
+                        yield event("plan_out", f"  [{status}] {r['address']}")
+
+                    imported = sum(1 for r in results if r["success"])
+                    if imported == 0:
                         yield event("error",
-                            "State vazio e sem import_map definido para este recurso.")
+                            "Nenhum recurso encontrado na AWS para importar. "
+                            "Verifique o nome e a region.")
+                        return
+
+                    # Re-run plan -destroy apos import
+                    yield event("plan_out", "Re-executando plan -destroy apos import...")
+                    rc = 0
+                    async for line, rc in self._run_cmd(
+                            ["terraform", "plan", "-destroy", "-no-color",
+                             f"-out={plan_file}"], workdir):
+                        if line:
+                            print(f"[{run_id}] DESTROY-PLAN2: {line}", flush=True)
+                            yield event("plan_out", line)
+
+                    if rc != 0:
+                        yield event("error", "terraform plan -destroy falhou apos import.")
                         return
 
                 elif rc != 0:
@@ -225,7 +236,8 @@ class TerraformPipeline:
                 return
 
             if action != "apply":
-                yield event("plan_done", "Plan concluido. Use action=apply para criar.")
+                yield event("plan_done",
+                    "Plan concluido. Clique em Aplicar na AWS para criar.")
                 return
 
             # ── terraform apply ───────────────────────────────────────

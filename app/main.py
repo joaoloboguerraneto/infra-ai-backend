@@ -3,7 +3,7 @@ import os
 from enum import Enum
 from typing import Optional
 
-from fastapi import FastAPI, Body
+from fastapi import FastAPI, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -24,8 +24,8 @@ pipeline  = TerraformPipeline(state_bucket=TF_STATE_BUCKET, aws_region=AWS_REGIO
 # ── Pydantic models ───────────────────────────────────────────────────────────
 
 class ActionEnum(str, Enum):
-    plan  = "plan"
-    apply = "apply"
+    plan   = "plan"
+    apply  = "apply"
     delete = "delete"
 
 
@@ -33,55 +33,39 @@ class GenerateRequest(BaseModel):
     prompt: str = Field(
         ...,
         min_length=5,
-        description="Pedido em linguagem natural descrevendo o recurso AWS a criar.",
+        description="Pedido em linguagem natural descrevendo o recurso AWS.",
         examples=["cria um bucket S3 chamado unicred-poc na us-east-1"],
     )
     model: str = Field(
         default="llama3.2:3b",
-        description="Modelo Ollama a usar para extração de intenção.",
+        description="Modelo Ollama para extração de intenção.",
         examples=["llama3.2:3b", "codellama:7b"],
     )
     action: ActionEnum = Field(
         default=ActionEnum.plan,
         description=(
-            "`plan` retorna o terraform plan sem criar recursos. "
-            "`apply` executa o terraform apply e cria os recursos na AWS."
+            "`plan` mostra o terraform plan sem criar recursos. "
+            "`apply` cria os recursos na AWS. "
+            "`delete` destrói os recursos (auto-detectado via keywords no prompt)."
         ),
     )
 
 
 class FileOutput(BaseModel):
-    path:     str = Field(..., description="Caminho relativo do arquivo HCL gerado.")
+    path:     str = Field(..., description="Caminho relativo do arquivo HCL.")
     conteudo: str = Field(..., description="Conteúdo HCL do arquivo.")
 
 
 class TemplateInfo(BaseModel):
     name:        str = Field(..., description="Identificador do tipo de recurso.")
-    description: str = Field(..., description="Descrição do que o template cria.")
+    description: str = Field(..., description="O que o template cria.")
 
 
 class HealthResponse(BaseModel):
     status:     str  = Field(..., description="Status do serviço.")
-    s3_backend: bool = Field(..., description="Se o backend S3 para state está configurado.")
-    aws_creds:  bool = Field(..., description="Se as credenciais AWS estão disponíveis no pod.")
+    s3_backend: bool = Field(..., description="Backend S3 configurado.")
+    aws_creds:  bool = Field(..., description="Credenciais AWS disponíveis.")
     templates:  list = Field(..., description="Tipos de recursos suportados.")
-
-
-class SseEvent(BaseModel):
-    step: str = Field(
-        ...,
-        description=(
-            "Etapa do pipeline. Valores: "
-            "`llm` (extração), `hcl` (arquivos gerados), `init` (terraform init), "
-            "`init_out` (output do init), `plan` (terraform plan), `plan_out` (output do plan), "
-            "`plan_done` (plan concluído, aguardando apply), `apply` (terraform apply), "
-            "`apply_out` (output do apply), `done` (concluído), `error` (falha)."
-        ),
-    )
-    msg: Optional[str] = Field(None, description="Mensagem de texto da etapa.")
-    files: Optional[list] = Field(None, description="Arquivos HCL gerados (somente no step `hcl`).")
-    resumo:  Optional[str] = Field(None, description="Resumo do recurso (somente no step `hcl`).")
-    recurso: Optional[str] = Field(None, description="Tipo do recurso detectado (somente no step `hcl`).")
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -89,28 +73,23 @@ class SseEvent(BaseModel):
 app = FastAPI(
     title="aiterraform",
     description=(
-        "API que combina um LLM local (Ollama) com templates Terraform pré-validados "
-        "para criar recursos AWS a partir de linguagem natural.\n\n"
+        "API que combina LLM local (Ollama) com templates Terraform pré-validados "
+        "para criar, atualizar e destruir recursos AWS a partir de linguagem natural.\n\n"
         "**Fluxo:** `prompt` → LLM extrai `{type, params}` → template gera HCL "
-        "→ `terraform plan/apply` → AWS\n\n"
-        "O endpoint `/generate` usa **Server-Sent Events (SSE)** para transmitir "
-        "o output do terraform em tempo real. Use `action=plan` para visualizar "
-        "o plan antes de aplicar."
+        "→ `terraform plan/apply/destroy` → AWS\n\n"
+        "O endpoint `/generate` usa **Server-Sent Events (SSE)**. "
+        "Use `action=plan` para ver o plan antes de aplicar. "
+        "Palavras como *remover*, *deletar*, *destroy* no prompt forçam `action=delete` automaticamente."
     ),
     version="1.0.0",
     contact={
         "name":  "Unicred DevOps",
         "url":   "https://github.com/joaoloboguerraneto/aiterraform",
-        "email": "devops@unicred.com.br",
-    },
-    license_info={
-        "name": "MIT",
-        "url":  "https://opensource.org/licenses/MIT",
     },
     openapi_tags=[
-        {"name": "infra",      "description": "Geração e aplicação de infraestrutura Terraform."},
-        {"name": "templates",  "description": "Recursos AWS suportados."},
-        {"name": "system",     "description": "Health check e status do serviço."},
+        {"name": "infra",     "description": "Geração e aplicação de infraestrutura Terraform."},
+        {"name": "templates", "description": "Recursos AWS suportados."},
+        {"name": "system",    "description": "Health check e status."},
     ],
 )
 
@@ -121,7 +100,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get(
@@ -129,7 +107,6 @@ app.add_middleware(
     tags=["system"],
     response_model=HealthResponse,
     summary="Health check",
-    description="Retorna o status do serviço, configuração do backend S3 e credenciais AWS.",
 )
 async def health() -> HealthResponse:
     return HealthResponse(
@@ -145,7 +122,7 @@ async def health() -> HealthResponse:
     tags=["templates"],
     response_model=list[TemplateInfo],
     summary="Listar templates disponíveis",
-    description="Retorna todos os tipos de recursos AWS suportados e suas descrições.",
+    description="Retorna todos os tipos de recursos AWS suportados.",
 )
 async def list_templates() -> list[TemplateInfo]:
     return [
@@ -157,65 +134,72 @@ async def list_templates() -> list[TemplateInfo]:
 @app.post(
     "/generate",
     tags=["infra"],
-    summary="Gerar e aplicar Terraform",
+    summary="Gerar e aplicar Terraform via linguagem natural",
     description=(
-        "Recebe um pedido em linguagem natural, gera o HCL via template "
-        "e executa o pipeline Terraform.\n\n"
-        "A resposta é um stream **Server-Sent Events (SSE)**. "
-        "Cada evento é uma linha `data: {json}\\n\\n` com o campo `step` "
-        "indicando a etapa atual.\n\n"
-        "**Exemplo de integração:**\n"
-        "```js\n"
-        "const res = await fetch('/generate', { method: 'POST', body: JSON.stringify({prompt, action}) });\n"
-        "const reader = res.body.getReader();\n"
-        "// processar eventos SSE linha a linha\n"
-        "```\n\n"
-        "Use `action=plan` para visualizar o plan sem criar recursos. "
-        "Após revisar, chame novamente com `action=apply` para aplicar."
+        "Recebe prompt em linguagem natural, gera HCL via template e executa o pipeline.\n\n"
+        "Resposta em **SSE** (Server-Sent Events): cada evento é `data: {json}\\n\\n`.\n\n"
+        "**Detecção automática de intent:**\n"
+        "- Palavras como *remover*, *deletar*, *destroy* → força `action=delete`\n"
+        "- Palavras como *dead letter*, *dlq* → adiciona dead_letter=true nos params\n\n"
+        "Use `action=plan` para ver o plan, depois `action=apply` para criar."
     ),
     responses={
         200: {
-            "description": "Stream SSE com eventos do pipeline Terraform.",
+            "description": "Stream SSE com eventos do pipeline.",
             "content": {
                 "text/event-stream": {
-                    "schema": {"$ref": "#/components/schemas/SseEvent"},
                     "example": (
                         'data: {"step":"llm","msg":"Detectando recurso..."}\n\n'
-                        'data: {"step":"hcl","recurso":"S3 Bucket","resumo":"Bucket unicred-poc","files":[...]}\n\n'
-                        'data: {"step":"plan_out","msg":"Plan: 4 to add, 0 to change, 0 to destroy."}\n\n'
+                        'data: {"step":"hcl","recurso":"S3 Bucket","resumo":"..."}\n\n'
+                        'data: {"step":"plan_out","msg":"Plan: 4 to add."}\n\n'
                         'data: {"step":"plan_done","msg":"Plan concluido."}\n\n'
                     ),
                 }
             },
         },
-        422: {"description": "Payload inválido."},
     },
 )
 async def generate(
     body: GenerateRequest = Body(
         examples={
-            "s3": {
-                "summary": "Criar bucket S3",
+            "s3_plan": {
+                "summary": "Plan — S3 Bucket",
                 "value": {
                     "prompt": "cria um bucket S3 chamado unicred-poc na us-east-1",
                     "model":  "llama3.2:3b",
                     "action": "plan",
                 },
             },
-            "lambda": {
-                "summary": "Criar Lambda",
+            "s3_apply": {
+                "summary": "Apply — S3 Bucket",
                 "value": {
-                    "prompt": "Lambda Python 3.12 chamada processador-pagamentos com 512MB",
+                    "prompt": "cria um bucket S3 chamado unicred-poc na us-east-1",
                     "model":  "llama3.2:3b",
-                    "action": "plan",
+                    "action": "apply",
                 },
             },
-            "sqs": {
-                "summary": "Criar fila SQS com DLQ",
+            "sqs_dlq": {
+                "summary": "Apply — SQS com DLQ",
                 "value": {
                     "prompt": "fila SQS eventos-pix com dead letter queue",
                     "model":  "llama3.2:3b",
                     "action": "apply",
+                },
+            },
+            "delete_sqs": {
+                "summary": "Delete — SQS",
+                "value": {
+                    "prompt": "remover a fila SQS eventos-pix com dead letter queue",
+                    "model":  "llama3.2:3b",
+                    "action": "delete",
+                },
+            },
+            "delete_s3": {
+                "summary": "Delete — S3",
+                "value": {
+                    "prompt": "deletar o bucket S3 unicred-poc",
+                    "model":  "llama3.2:3b",
+                    "action": "delete",
                 },
             },
         }
@@ -233,20 +217,15 @@ async def generate(
     response_model=list[FileOutput],
     summary="Renderizar template diretamente (sem LLM)",
     description=(
-        "Renderiza um template diretamente passando o tipo e parâmetros — "
-        "sem chamar o LLM. Útil para integração programática quando o sistema "
-        "chamador já sabe o tipo de recurso e os parâmetros.\n\n"
-        "Não executa terraform — apenas retorna os arquivos HCL gerados."
+        "Renderiza HCL diretamente passando tipo e parâmetros — sem chamar o LLM. "
+        "Útil para integração programática quando o sistema chamador já conhece o tipo."
     ),
-    responses={
-        404: {"description": "Tipo de recurso não suportado."},
-    },
+    responses={404: {"description": "Tipo de recurso não suportado."}},
 )
 async def render(
     resource_type: str = Body(..., description="Tipo do recurso.", examples=["s3_bucket"]),
-    params: dict       = Body(..., description="Parâmetros do recurso.", examples=[{"nome": "unicred-poc", "region": "us-east-1"}]),
+    params:        dict = Body(..., description="Parâmetros.", examples=[{"nome": "unicred-poc", "region": "us-east-1"}]),
 ):
-    from fastapi import HTTPException
     if resource_type not in REGISTRY:
         raise HTTPException(
             status_code=404,
@@ -256,7 +235,7 @@ async def render(
     return [FileOutput(path=f["path"], conteudo=f["conteudo"]) for f in data["arquivos"]]
 
 
-# ── Stream helper ─────────────────────────────────────────────────────────────
+# ── Stream ────────────────────────────────────────────────────────────────────
 
 async def _stream(prompt: str, model: str, action: str):
     def event(step: str, msg: str) -> str:
@@ -276,9 +255,9 @@ async def _stream(prompt: str, model: str, action: str):
     rtype  = extracted.get("type", "")
     params = extracted.get("params", {})
 
-    # Intenção de deleção detectada no prompt sobrescreve o action
+    # Intent de deleção no prompt sobrescreve action
     if extracted.get("delete_intent") and action != "delete":
-        print(f"delete_intent detectado no prompt — forçando action=delete", flush=True)
+        print(f"delete_intent detectado — forçando action=delete", flush=True)
         action = "delete"
 
     print(f"type={rtype} params={params} action={action}", flush=True)
@@ -288,10 +267,13 @@ async def _stream(prompt: str, model: str, action: str):
         yield event("error", f'Tipo "{rtype}" nao suportado. Disponiveis: {supported}')
         return
 
-    data = REGISTRY[rtype].render(params)
+    tmpl = REGISTRY[rtype]
+    data = tmpl.render(params)
+    data["_params"] = params
+
     print(f"template: {data['recurso']} — {data['resumo']}", flush=True)
 
     yield f"data: {json.dumps({'step':'hcl','files':data['arquivos'],'resumo':data['resumo'],'recurso':data['recurso']})}\n\n"
 
-    async for chunk in pipeline.run(data, action):
+    async for chunk in pipeline.run(data, action, template=tmpl):
         yield chunk
