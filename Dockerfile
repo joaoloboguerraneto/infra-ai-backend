@@ -7,29 +7,23 @@ ARG TF_VERSION=1.9.5
 RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" \
     -o /tmp/tf.zip && unzip /tmp/tf.zip -d /usr/local/bin/ && rm /tmp/tf.zip
 
-# Criar mirror local do provider AWS — init funciona sem internet
+ENV TF_PLUGIN_CACHE_DIR=/root/.terraform.d/plugin-cache
+RUN mkdir -p /root/.terraform.d/plugin-cache
+
 COPY providers.tf /tmp/tf-warm/main.tf
 RUN cd /tmp/tf-warm && terraform init && \
     terraform providers mirror /usr/local/terraform-providers && \
     rm -rf /tmp/tf-warm
 
-# Configurar terraform para usar o mirror local em vez do registry
-RUN cat > /root/.terraformrc << 'RCEOF'
-provider_installation {
-  filesystem_mirror {
-    path    = "/usr/local/terraform-providers"
-    include = ["registry.terraform.io/*/*"]
-  }
-  direct {
-    exclude = ["registry.terraform.io/*/*"]
-  }
-}
-RCEOF
+RUN printf 'provider_installation {\n  filesystem_mirror {\n    path    = "/usr/local/terraform-providers"\n    include = ["registry.terraform.io/*/*"]\n  }\n  direct {\n    exclude = ["registry.terraform.io/*/*"]\n  }\n}\n' > /root/.terraformrc
 
 WORKDIR /app
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY main.py .
+
+# Copia o pacote app/ inteiro (não mais main.py solto)
+COPY app/ ./app/
 
 EXPOSE 8080
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
