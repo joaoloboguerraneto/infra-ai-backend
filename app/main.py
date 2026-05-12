@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.extractor import LLMExtractor
+from app.routes_azure import router as azure_router
 from app.pipeline import TerraformPipeline
 from app.templates import get_registry
 
@@ -89,9 +90,12 @@ app = FastAPI(
     openapi_tags=[
         {"name": "infra",     "description": "Geração e aplicação de infraestrutura Terraform."},
         {"name": "templates", "description": "Recursos AWS suportados."},
-        {"name": "system",    "description": "Health check e status."},
+        {"name": "system",      "description": "Health check e status."},
+        {"name": "azure-devops","description": "Criação de repositórios com fluxo de aprovação."},
     ],
 )
+
+app.include_router(azure_router)
 
 app.add_middleware(
     CORSMiddleware,

@@ -7,6 +7,36 @@ import uuid
 from pathlib import Path
 
 
+def _resolve_sqs_url(queue_name: str, region: str) -> str:
+    """
+    Resolve a URL completa da fila SQS via boto3.
+    Ex: https://sqs.us-east-1.amazonaws.com/123456789012/eventos-pix
+    """
+    try:
+        import boto3
+        client = boto3.client("sqs", region_name=region)
+        res    = client.get_queue_url(QueueName=queue_name)
+        return res["QueueUrl"]
+    except Exception as e:
+        raise ValueError(f"Nao foi possivel resolver URL da fila '{queue_name}': {e}")
+
+
+def resolve_import_id(item: dict) -> str:
+    """
+    Resolve o ID de import de um recurso.
+    Suporta resolvers especiais (ex: sqs_url) ou retorna o ID direto.
+    """
+    resolver = item.get("resolver")
+
+    if resolver == "sqs_url":
+        return _resolve_sqs_url(
+            queue_name=item["id"],
+            region=item.get("region", "us-east-1"),
+        )
+
+    return item["id"]
+
+
 class TerraformPipeline:
     def __init__(self, state_bucket: str, aws_region: str):
         self.state_bucket = state_bucket
@@ -18,22 +48,14 @@ class TerraformPipeline:
 
         Estrutura no S3:
           poc/
-            s3_bucket/
-              unicred-poc/terraform.tfstate
-            sqs_queue/
-              eventos-pix/terraform.tfstate
-            lambda_function/
-              processador-ted/terraform.tfstate
-
-        Create e delete sempre usam a mesma chave — nunca perde o state.
+            s3_bucket/unicred-poc/terraform.tfstate
+            sqs_queue/eventos-pix/terraform.tfstate
+            lambda_function/processador-ted/terraform.tfstate
         """
         resource_type = data.get("recurso", "unknown").lower().replace(" ", "_")
-
-        # Nome vindo direto dos params (mais confiável que parsear HCL)
-        params    = data.get("_params", {})
-        nome      = params.get("nome") or params.get("function_name") or "default"
-        nome_safe = re.sub(r'[^a-z0-9_-]', '-', nome.lower())
-
+        params        = data.get("_params", {})
+        nome          = params.get("nome") or params.get("function_name") or "default"
+        nome_safe     = re.sub(r'[^a-z0-9_-]', '-', nome.lower())
         return f"poc/{resource_type}/{nome_safe}/terraform.tfstate"
 
     def _backend_tf(self, region: str, state_key: str) -> str:
@@ -67,13 +89,26 @@ class TerraformPipeline:
 
     async def _auto_import(self, import_map: list, workdir: Path, run_id: str) -> list:
         """
-        Importa recursos para o state automaticamente.
-        Falhas individuais são ignoradas — só falha se nenhum importar.
+        Importa recursos para o state.
+        Resolve IDs dinâmicos (ex: URL do SQS) antes do import.
         """
         results = []
         for item in import_map:
             address = item["address"]
-            res_id  = item["id"]
+
+            # Resolver ID dinamicamente se necessário
+            try:
+                res_id = resolve_import_id(item)
+            except ValueError as e:
+                print(f"[{run_id}] IMPORT-RESOLVE-ERROR: {e}", flush=True)
+                results.append({
+                    "address": address,
+                    "id":      item["id"],
+                    "success": False,
+                    "output":  [str(e)],
+                })
+                continue
+
             print(f"[{run_id}] IMPORT: {address} <- {res_id}", flush=True)
 
             lines = []
@@ -132,9 +167,8 @@ class TerraformPipeline:
 
             # ── DELETE ────────────────────────────────────────────────
             if action == "delete":
-                yield event("destroy", f"Verificando state...")
+                yield event("destroy", "Verificando state...")
 
-                # Plan -destroy completo sem break
                 plan_output = []
                 rc = 0
                 async for line, rc in self._run_cmd(
@@ -155,14 +189,14 @@ class TerraformPipeline:
 
                 if state_empty:
                     if template is None:
-                        yield event("error", "State vazio e template nao disponivel para import.")
+                        yield event("error", "State vazio e template nao disponivel.")
                         return
 
                     import_map = template.import_map(params)
                     print(f"[{run_id}] import_map={import_map}", flush=True)
 
                     if not import_map:
-                        yield event("error", "State vazio e import_map vazio para este recurso.")
+                        yield event("error", "State vazio e import_map vazio.")
                         return
 
                     yield event("plan_out",
@@ -176,11 +210,9 @@ class TerraformPipeline:
                     imported = sum(1 for r in results if r["success"])
                     if imported == 0:
                         yield event("error",
-                            "Nenhum recurso encontrado na AWS para importar. "
-                            "Verifique o nome e a region.")
+                            "Nenhum recurso importado. Verifique nome e region.")
                         return
 
-                    # Re-run plan -destroy apos import
                     yield event("plan_out", "Re-executando plan -destroy apos import...")
                     rc = 0
                     async for line, rc in self._run_cmd(
@@ -191,14 +223,13 @@ class TerraformPipeline:
                             yield event("plan_out", line)
 
                     if rc != 0:
-                        yield event("error", "terraform plan -destroy falhou apos import.")
+                        yield event("error", "plan -destroy falhou apos import.")
                         return
 
                 elif rc != 0:
                     yield event("error", "terraform plan -destroy falhou.")
                     return
 
-                # Apply -destroy
                 yield event("destroy_confirm", "Destruindo recursos na AWS...")
                 async for line, rc in self._run_cmd(
                         ["terraform", "apply", "-destroy", "-no-color",

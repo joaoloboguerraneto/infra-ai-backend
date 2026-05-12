@@ -62,20 +62,30 @@ class SQSQueueTemplate(TerraformTemplate):
 
     def import_map(self, params: dict) -> list:
         """
-        Sempre importa a fila principal.
-        Importa DLQ se dead_letter=True nos params
-        (detectado por keyword no extractor, nao depende do LLM).
+        SQS import requer a URL completa da fila.
+        O pipeline resolve a URL via boto3 antes de importar.
+        Usamos o marcador '__sqs_url__' para indicar resolução dinâmica.
         """
         nome        = params.get("nome", "minha-fila")
         dead_letter = params.get("dead_letter", False)
+        region      = params.get("region", "us-east-1")
         lb          = self.label(nome)
 
-        items = [{"address": f"aws_sqs_queue.{lb}", "id": nome}]
+        items = [
+            {
+                "address":  f"aws_sqs_queue.{lb}",
+                "id":       nome,
+                "resolver": "sqs_url",   # sinaliza resolução via boto3
+                "region":   region,
+            }
+        ]
 
         if dead_letter:
             items.append({
-                "address": f"aws_sqs_queue.{lb}_dlq",
-                "id":      f"{nome}-dlq",
+                "address":  f"aws_sqs_queue.{lb}_dlq",
+                "id":       f"{nome}-dlq",
+                "resolver": "sqs_url",
+                "region":   region,
             })
 
         return items
