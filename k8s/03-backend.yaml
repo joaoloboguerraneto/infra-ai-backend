@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: terraform-ai-backend
+  namespace: ai-infra
+  labels:
+    app: terraform-ai-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: terraform-ai-backend
+  template:
+    metadata:
+      labels:
+        app: terraform-ai-backend
+    spec:
+      containers:
+        - name: backend
+          # Para POC local via kind:
+          #   docker build -t terraform-ai-backend:latest .
+          #   kind load docker-image terraform-ai-backend:latest --name terraform-ai
+          image: terraform-ai-backend:latest
+          imagePullPolicy: Never   # troque por Always ao usar registry externo
+          ports:
+            - containerPort: 8080
+          env:
+            - name: OLLAMA_URL
+              value: "http://ollama.ai-infra.svc.cluster.local:11434"
+            - name: TF_STATE_BUCKET
+              value: "unicred-terraform-state-poc"
+            - name: AWS_REGION
+              value: "us-east-1"
+            # Credenciais via Secret (remova ao usar IRSA no EKS)
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: AWS_DEFAULT_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: AWS_DEFAULT_REGION
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: terraform-ai-backend
+  namespace: ai-infra
+  labels:
+    app: terraform-ai-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: terraform-ai-backend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

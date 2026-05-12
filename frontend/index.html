@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Terraform AI - Unicred</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #080808; color: #e4e4e4; font-family: system-ui, sans-serif; min-height: 100vh; }
+    .app { max-width: 860px; margin: 0 auto; padding: 32px 20px; }
+    h1 { font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 4px; }
+    .sub { font-size: 11px; color: #333; margin-bottom: 28px; font-family: monospace; letter-spacing: .05em; }
+    .row { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+    label { font-size: 11px; color: #555; font-family: monospace; }
+    select { background: #111; border: 1px solid #2a2a2a; color: #ccc; border-radius: 6px; padding: 6px 10px; font-size: 12px; font-family: monospace; }
+    .examples { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+    .ex { background: #111; border: 1px solid #1e1e1e; color: #555; border-radius: 20px; padding: 4px 12px; font-size: 11px; cursor: pointer; transition: all .15s; }
+    .ex:hover { color: #00ff88; border-color: #00ff8840; }
+    textarea { width: 100%; background: #0d0d0d; border: 1px solid #222; border-radius: 8px; color: #ddd; font-size: 14px; padding: 14px; resize: vertical; min-height: 70px; outline: none; margin-bottom: 10px; }
+    textarea:focus { border-color: #00ff8855; }
+    .btns { display: flex; gap: 8px; justify-content: flex-end; margin-bottom: 24px; }
+    .btn-plan  { background: #1a1a2a; border: 1px solid #3a3a6a; color: #9b88ff; border-radius: 6px; font-size: 13px; font-weight: 700; padding: 10px 20px; cursor: pointer; }
+    .btn-apply { background: #00ff88; border: none; color: #000; border-radius: 6px; font-size: 13px; font-weight: 700; padding: 10px 20px; cursor: pointer; display: none; }
+    .btn-plan:disabled, .btn-apply:disabled { opacity: .4; cursor: default; }
+    .steps { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+    .step { display: flex; align-items: center; gap: 10px; font-size: 12px; font-family: monospace; padding: 8px 12px; border-radius: 6px; background: #0d0d0d; border: 1px solid #1a1a1a; }
+    .step-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .step.active .step-dot { background: #00ff88; animation: blink 1s infinite; }
+    .step.done   .step-dot { background: #00ff88; }
+    .step.error  .step-dot { background: #ff4444; }
+    .step.idle   .step-dot { background: #2a2a2a; }
+    @keyframes blink { 0%,100%{opacity:1}50%{opacity:.3} }
+    .files { margin-bottom: 16px; }
+    .file-tabs { display: flex; gap: 0; border-bottom: 1px solid #1e1e1e; overflow-x: auto; }
+    .ftab { background: none; border: none; border-bottom: 2px solid transparent; color: #555; font-family: monospace; font-size: 11px; padding: 7px 14px; cursor: pointer; white-space: nowrap; }
+    .ftab.active { color: #00ff88; border-bottom-color: #00ff88; }
+    .file-content { background: #0a0a0a; border: 1px solid #1e1e1e; border-top: none; border-radius: 0 0 8px 8px; padding: 14px; font-family: monospace; font-size: 11.5px; line-height: 1.75; color: #c8c8c8; white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; position: relative; }
+    .copy-file { position: absolute; top: 8px; right: 8px; background: #1a1a1a; border: 1px solid #2a2a2a; color: #555; border-radius: 4px; font-size: 10px; font-family: monospace; padding: 3px 8px; cursor: pointer; }
+    .terminal { background: #050505; border: 1px solid #1a1a1a; border-radius: 8px; padding: 14px; font-family: monospace; font-size: 11px; line-height: 1.7; max-height: 280px; overflow-y: auto; }
+    .terminal-line { color: #4a7a4a; }
+    .terminal-line.err { color: #aa4444; }
+    .terminal-line.head { color: #9b88ff; font-weight: bold; }
+    .summary { background: #0a1a0a; border: 1px solid #00ff8830; border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; }
+    .summary-title { font-size: 10px; color: #00ff88; font-family: monospace; letter-spacing: .15em; margin-bottom: 6px; }
+    .summary-text { font-size: 15px; font-weight: 700; color: #fff; }
+    .summary-resource { font-size: 11px; color: #00ff88; font-family: monospace; margin-top: 2px; }
+    .confirm-box { background: #141020; border: 1px solid #9b88ff40; border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; display: none; }
+    .confirm-box.visible { display: block; }
+    .confirm-text { font-size: 13px; color: #9b88ff; margin-bottom: 10px; }
+    .confirm-warn { font-size: 11px; color: #555; }
+    .done-box { background: #0a1a0a; border: 1px solid #00ff8850; border-radius: 8px; padding: 16px; display: none; }
+    .done-box.visible { display: block; }
+    .done-title { font-size: 13px; color: #00ff88; font-weight: 700; margin-bottom: 4px; }
+    .done-msg { font-size: 11px; color: #4a8a4a; font-family: monospace; }
+  </style>
+</head>
+<body>
+<div class="app">
+  <h1>Terraform AI - Unicred</h1>
+  <div class="sub">POC - LLM on Kubernetes - infra gerada por IA local</div>
+
+  <div class="row">
+    <label>Modelo:</label>
+    <select id="model">
+      <option value="llama3.2:3b">llama3.2:3b (CPU)</option>
+      <option value="codellama:7b">codellama:7b (melhor HCL)</option>
+    </select>
+  </div>
+
+  <div class="examples">
+    <span style="font-size:10px;color:#333;font-family:monospace;align-self:center">Exemplos:</span>
+    <button class="ex" onclick="fill(this)">bucket S3 unicred-poc na us-east-1</button>
+    <button class="ex" onclick="fill(this)">Lambda Java 21 processador-ted 512MB</button>
+    <button class="ex" onclick="fill(this)">fila SQS eventos-pix com dead letter queue</button>
+  </div>
+
+  <textarea id="prompt" placeholder="Descreva o recurso AWS que voce quer criar..."></textarea>
+
+  <div class="btns">
+    <button class="btn-plan" id="btn-plan" onclick="runPlan()">Ver Plan</button>
+    <button class="btn-apply" id="btn-apply" onclick="runApply()">Aplicar na AWS</button>
+  </div>
+
+  <div id="steps" class="steps"></div>
+  <div id="summary" class="summary" style="display:none"></div>
+  <div id="files" class="files" style="display:none"></div>
+  <div id="confirm" class="confirm-box">
+    <div class="confirm-text">Plan concluido. Revise os arquivos e confirme a criacao do recurso na AWS.</div>
+    <div class="confirm-warn">Isso ira criar recursos reais na sua conta AWS.</div>
+  </div>
+  <div id="terminal" class="terminal" style="display:none"></div>
+  <div id="done" class="done-box"></div>
+</div>
+
+<script>
+  var BACKEND = 'http://localhost:8080';
+  var currentFiles = [];
+
+  function fill(btn) { document.getElementById('prompt').value = btn.textContent; }
+  function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  function addStep(id, label, state) {
+    var el = document.getElementById('step-' + id);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'step-' + id;
+      el.className = 'step ' + state;
+      el.innerHTML = '<div class="step-dot"></div><span>' + esc(label) + '</span>';
+      document.getElementById('steps').appendChild(el);
+    } else {
+      el.className = 'step ' + state;
+      el.querySelector('span').textContent = label;
+    }
+  }
+
+  function appendTerminal(msg, cls) {
+    var t = document.getElementById('terminal');
+    t.style.display = 'block';
+    var line = document.createElement('div');
+    line.className = 'terminal-line ' + (cls || '');
+    line.textContent = msg;
+    t.appendChild(line);
+    t.scrollTop = t.scrollHeight;
+  }
+
+  function showTab(i) {
+    var f = currentFiles[i];
+    var el = document.getElementById('files');
+    var tabs = currentFiles.map(function(f, idx) {
+      return '<button class="ftab' + (idx === i ? ' active' : '') + '" onclick="showTab(' + idx + ')">' + esc(f.path) + '</button>';
+    }).join('');
+    el.innerHTML = '<div class="file-tabs">' + tabs + '</div>' +
+      '<div class="file-content"><button class="copy-file" onclick="copyFile(' + i + ')">copiar</button>' + esc(f.conteudo) + '</div>';
+  }
+
+  function copyFile(i) { navigator.clipboard.writeText(currentFiles[i].conteudo); }
+
+  async function runAction(action) {
+    var prompt = document.getElementById('prompt').value.trim();
+    var model  = document.getElementById('model').value;
+    if (!prompt) return;
+
+    document.getElementById('btn-plan').disabled = true;
+    document.getElementById('btn-apply').style.display = 'none';
+    document.getElementById('steps').innerHTML = '';
+    document.getElementById('terminal').innerHTML = '';
+    document.getElementById('terminal').style.display = 'none';
+    document.getElementById('files').style.display = 'none';
+    document.getElementById('summary').style.display = 'none';
+    document.getElementById('confirm').className = 'confirm-box';
+    document.getElementById('done').className = 'done-box';
+
+    try {
+      var res = await fetch(BACKEND + '/generate', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({prompt: prompt, model: model, action: action})
+      });
+
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder();
+      var buf = '';
+
+      while (true) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        buf += decoder.decode(chunk.value, {stream: true});
+        var lines = buf.split('\n');
+        buf = lines.pop();
+        lines.forEach(function(line) {
+          if (!line.startsWith('data: ')) return;
+          try { handleEvent(JSON.parse(line.slice(6)), action); } catch(e) {}
+        });
+      }
+    } catch(e) {
+      addStep('conn', 'Erro: ' + e.message, 'error');
+    }
+    document.getElementById('btn-plan').disabled = false;
+  }
+
+  function handleEvent(ev, action) {
+    if (ev.step === 'llm') {
+      addStep('llm', ev.msg, 'active');
+    } else if (ev.step === 'hcl') {
+      addStep('llm', 'Recurso detectado', 'done');
+      currentFiles = ev.files;
+      var s = document.getElementById('summary');
+      s.style.display = 'block';
+      s.innerHTML = '<div class="summary-title">RECURSO DETECTADO</div>' +
+        '<div class="summary-text">' + esc(ev.resumo) + '</div>' +
+        '<div class="summary-resource">' + esc(ev.recurso) + '</div>';
+      document.getElementById('files').style.display = 'block';
+      showTab(0);
+    } else if (ev.step === 'init') {
+      addStep('init', 'terraform init...', 'active');
+    } else if (ev.step === 'init_out') {
+      if (ev.msg && (ev.msg.includes('successfully') || ev.msg.includes('Success'))) {
+        addStep('init', 'terraform init concluido', 'done');
+      }
+    } else if (ev.step === 'plan') {
+      addStep('plan', 'terraform plan...', 'active');
+      appendTerminal('--- terraform plan ---', 'head');
+    } else if (ev.step === 'plan_out') {
+      appendTerminal(ev.msg);
+    } else if (ev.step === 'plan_done') {
+      addStep('plan', 'Plan concluido', 'done');
+      if (action === 'plan') {
+        document.getElementById('confirm').className = 'confirm-box visible';
+        document.getElementById('btn-apply').style.display = 'inline-block';
+      }
+    } else if (ev.step === 'apply') {
+      addStep('apply', 'Aplicando na AWS...', 'active');
+      appendTerminal('--- terraform apply ---', 'head');
+    } else if (ev.step === 'apply_out') {
+      appendTerminal(ev.msg);
+    } else if (ev.step === 'done') {
+      addStep('apply', 'Recurso criado!', 'done');
+      document.getElementById('confirm').className = 'confirm-box';
+      var d = document.getElementById('done');
+      d.className = 'done-box visible';
+      d.innerHTML = '<div class="done-title">Recurso criado com sucesso!</div>' +
+        '<div class="done-msg">' + esc(ev.msg) + '</div>';
+    } else if (ev.step === 'error') {
+      addStep('error', 'Erro: ' + ev.msg, 'error');
+      appendTerminal(ev.msg, 'err');
+    }
+  }
+
+  function runPlan()  { runAction('plan'); }
+  function runApply() {
+    document.getElementById('confirm').className = 'confirm-box';
+    document.getElementById('btn-apply').style.display = 'none';
+    runAction('apply');
+  }
+</script>
+</body>
+</html>

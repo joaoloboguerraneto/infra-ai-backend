@@ -1,96 +1,100 @@
-# terraform-ai-backend
+# aiterraform
 
-Backend FastAPI que combina um LLM local (Ollama) com templates Terraform para gerar e aplicar infraestrutura AWS a partir de linguagem natural.
+AI-powered Terraform backend that uses a local LLM (Ollama on Kubernetes) to extract infrastructure intent from natural language and generate validated HCL via pre-built templates. Supports S3, Lambda, SQS — extensible by design.
 
 ## Como funciona
 
 ```
-Prompt → LLM (extrai tipo + params) → Template HCL → terraform plan/apply → AWS
+Prompt → LLM extrai {type, params} → Template gera HCL → terraform plan/apply → AWS
 ```
 
-O LLM **não gera HCL** — apenas extrai a intenção. O HCL vem de templates Python pré-validados, garantindo código correto independente do modelo.
-
-## Stack
-
-- **FastAPI** — API HTTP + SSE streaming
-- **Ollama** — LLM local (llama3.2:3b, codellama, etc.)
-- **Terraform 1.9.x** — provider AWS ~> 5.0
-- **Kubernetes** — deploy via kind (POC) ou EKS (produção)
+O LLM **não gera HCL** — apenas extrai a intenção. O HCL vem de templates Python pré-validados.
 
 ## Estrutura
 
 ```
-app/
-├── main.py          # Rotas FastAPI (thin layer)
-├── extractor.py     # Chama o LLM para extrair tipo + parâmetros
-├── pipeline.py      # Executa terraform init/validate/plan/apply
-└── templates/
-    ├── base.py      # Classe abstrata TerraformTemplate
-    ├── s3.py        # aws_s3_bucket (+ versioning, encryption, public access block)
-    ├── lambda_.py   # aws_lambda_function (+ IAM role, CloudWatch Logs)
-    ├── sqs.py       # aws_sqs_queue (+ dead letter queue opcional)
-    └── __init__.py  # Registry automático
+aiterraform/
+├── app/
+│   ├── main.py              # Rotas FastAPI
+│   ├── extractor.py         # LLM → {type, params}
+│   ├── pipeline.py          # terraform init/validate/plan/apply
+│   └── templates/
+│       ├── base.py          # Classe abstrata TerraformTemplate
+│       ├── s3.py            # S3 Bucket
+│       ├── lambda_.py       # Lambda Function
+│       ├── sqs.py           # SQS Queue
+│       └── __init__.py      # Registry automático
+├── frontend/
+│   └── index.html           # UI: plan → confirmar → apply
+├── k8s/
+│   ├── 00-namespace.yaml
+│   ├── 01-ollama.yaml       # PVC + Deployment + Service
+│   ├── 02-aws-secret.yaml.template
+│   ├── 03-backend.yaml
+│   └── 04-frontend.yaml
+├── Dockerfile
+├── Makefile
+├── providers.tf
+└── requirements.txt
 ```
 
-## Adicionar um novo recurso
+## Setup
 
-1. Criar `app/templates/meu_recurso.py` herdando `TerraformTemplate`
-2. Implementar `name`, `description` e `render(params) -> dict`
-3. Importar em `app/templates/__init__.py`
-
-```python
-# app/templates/rds.py
-from .base import TerraformTemplate
-
-class RDSInstanceTemplate(TerraformTemplate):
-    name        = "rds_instance"
-    description = "RDS PostgreSQL com backup e multi-AZ opcional"
-
-    def render(self, params: dict) -> dict:
-        nome = params.get("nome", "meu-banco")
-        # ... retorna {"recurso", "resumo", "provider_region", "arquivos"}
-```
-
-```python
-# app/templates/__init__.py
-from .rds import RDSInstanceTemplate  # adicionar esta linha
-```
-
-## Deploy local (kind)
+### 1. Cluster kind
 
 ```bash
-# Build
-docker build -t terraform-ai-backend:latest .
-kind load docker-image terraform-ai-backend:latest --name terraform-ai
-
-# Credenciais AWS
-kubectl create secret generic aws-credentials -n ai-infra \
-  --from-literal=AWS_ACCESS_KEY_ID=... \
-  --from-literal=AWS_SECRET_ACCESS_KEY=... \
-  --from-literal=AWS_DEFAULT_REGION=us-east-1
-
-# Deploy
-kubectl apply -f k8s/deployment.yaml
-
-# Testar
-kubectl port-forward -n ai-infra svc/terraform-ai-backend 8080:8080
-curl http://localhost:8080/health
-curl http://localhost:8080/templates
+kind create cluster --name terraform-ai
 ```
 
-## Variáveis de ambiente
+### 2. Recursos AWS para o state
 
-| Variável            | Padrão                                              | Descrição                        |
-|---------------------|-----------------------------------------------------|----------------------------------|
-| `OLLAMA_URL`        | `http://ollama.ai-infra.svc.cluster.local:11434`    | URL do servidor Ollama           |
-| `TF_STATE_BUCKET`   | `""`                                                | Bucket S3 para o terraform state |
-| `AWS_REGION`        | `us-east-1`                                         | Região padrão AWS                |
-| `AWS_ACCESS_KEY_ID` | —                                                   | Credenciais AWS (ou use IRSA)    |
+```bash
+aws s3 mb s3://unicred-terraform-state-poc --region us-east-1
+aws dynamodb create-table --table-name terraform-locks \
+  --attribute-definitions AttributeName=LockID,AttributeType=S \
+  --key-schema AttributeName=LockID,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST --region us-east-1
+```
+
+### 3. Deploy completo
+
+```bash
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_DEFAULT_REGION=us-east-1
+
+make apply-k8s   # namespace + secrets + todos os manifests
+make deploy      # build docker + kind load + rollout
+make pull-model  # ollama pull llama3.2:3b
+```
+
+### 4. Acessar
+
+```bash
+make pf          # sobe os 3 port-forwards
+open http://localhost:3000
+```
+
+## Uso diário
+
+```bash
+make deploy    # rebuild e redeploy do backend
+make frontend  # atualiza o frontend/index.html no ConfigMap
+make logs      # logs em tempo real
+make pf        # port-forwards
+```
+
+## Adicionar novo recurso
+
+1. Criar `app/templates/rds.py` herdando `TerraformTemplate`
+2. Implementar `name`, `description` e `render(params)`
+3. Importar em `app/templates/__init__.py`
+4. `make deploy`
 
 ## Endpoints
 
 | Método | Path         | Descrição                              |
 |--------|--------------|----------------------------------------|
-| GET    | `/health`    | Status do serviço + templates ativos   |
-| GET    | `/templates` | Lista recursos suportados              |
-| POST   | `/generate`  | Gera e opcionalmente aplica o Terraform|
+| GET    | `/health`    | Status + templates + credenciais AWS   |
+| GET    | `/templates` | Recursos suportados                    |
+| POST   | `/generate`  | Gera e aplica Terraform via SSE        |
