@@ -5,318 +5,237 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Terraform AI - Unicred</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #080808; color: #e4e4e4; font-family: system-ui, sans-serif; min-height: 100vh; }
-    .app { max-width: 860px; margin: 0 auto; padding: 32px 20px; }
-    h1 { font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 4px; }
-    .sub { font-size: 11px; color: #333; margin-bottom: 24px; font-family: monospace; letter-spacing: .05em; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#080808;color:#e4e4e4;font-family:system-ui,sans-serif;min-height:100vh}
+    .app{max-width:860px;margin:0 auto;padding:32px 20px}
+    h1{font-size:20px;font-weight:700;color:#fff;margin-bottom:4px}
+    .sub{font-size:11px;color:#333;margin-bottom:28px;font-family:monospace;letter-spacing:.05em}
 
-    /* ── Tabs ── */
-    .tabs { display: flex; gap: 0; border-bottom: 1px solid #1e1e1e; margin-bottom: 28px; }
-    .tab  { background: none; border: none; border-bottom: 2px solid transparent;
-            color: #555; font-family: system-ui; font-size: 13px; font-weight: 700;
-            padding: 10px 22px; cursor: pointer; transition: all .15s; display: flex; align-items: center; gap: 7px; }
-    .tab:hover { color: #999; }
-    .tab.active-infra  { color: #00ff88; border-bottom-color: #00ff88; }
-    .tab.active-azure  { color: #00ccff; border-bottom-color: #00ccff; }
-    .panel { display: none; }
-    .panel.active { display: block; }
+    /* model row */
+    .model-row{display:flex;gap:8px;margin-bottom:16px;align-items:center}
+    .model-row label{font-size:12px;color:#555;font-family:monospace}
+    select{background:#111;border:1px solid #2a2a2a;color:#ccc;border-radius:6px;padding:6px 10px;font-size:12px;font-family:monospace}
 
-    /* ── Shared ── */
-    label { font-size: 11px; color: #555; font-family: monospace; letter-spacing: .1em; text-transform: uppercase; }
-    select, input[type=text], input[type=email] {
-      background: #111; border: 1px solid #2a2a2a; color: #ccc; border-radius: 6px;
-      padding: 8px 12px; font-size: 13px; font-family: monospace; width: 100%; outline: none; }
-    select:focus, input:focus { border-color: #00ccff55; }
-    .form-group { margin-bottom: 14px; }
-    .form-group label { display: block; margin-bottom: 6px; }
-    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-    .steps { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
-    .step  { display: flex; align-items: center; gap: 10px; font-size: 12px;
-             font-family: monospace; padding: 8px 12px; border-radius: 6px;
-             background: #0d0d0d; border: 1px solid #1a1a1a; }
-    .step-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-    .step.active .step-dot { background: #00ff88; animation: blink 1s infinite; }
-    .step.done   .step-dot { background: #00ff88; }
-    .step.error  .step-dot { background: #ff4444; }
-    .step.info   .step-dot { background: #00ccff; }
-    @keyframes blink { 0%,100%{opacity:1}50%{opacity:.3} }
+    /* examples */
+    .examples{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
+    .ex{background:#111;border:1px solid #1e1e1e;color:#555;border-radius:20px;padding:4px 12px;font-size:11px;cursor:pointer;transition:all .15s}
+    .ex:hover{color:#00ff88;border-color:#00ff8840}
+    .ex.azure:hover{color:#00ccff;border-color:#00ccff40}
 
-    /* ── Infra panel ── */
-    .model-row  { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; }
-    .model-row label { text-transform: none; letter-spacing: 0; font-size: 12px; }
-    .examples   { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
-    .ex { background: #111; border: 1px solid #1e1e1e; color: #555; border-radius: 20px;
-          padding: 4px 12px; font-size: 11px; cursor: pointer; transition: all .15s; }
-    .ex:hover { color: #00ff88; border-color: #00ff8840; }
-    textarea { width: 100%; background: #0d0d0d; border: 1px solid #222; border-radius: 8px;
-               color: #ddd; font-size: 14px; padding: 14px; resize: vertical; min-height: 70px;
-               outline: none; margin-bottom: 10px; }
-    textarea:focus { border-color: #00ff8855; }
-    .btns { display: flex; gap: 8px; justify-content: flex-end; margin-bottom: 20px; }
-    .btn-plan  { background: #1a1a2a; border: 1px solid #3a3a6a; color: #9b88ff;
-                 border-radius: 6px; font-size: 13px; font-weight: 700; padding: 10px 20px; cursor: pointer; }
-    .btn-apply { background: #00ff88; border: none; color: #000; border-radius: 6px;
-                 font-size: 13px; font-weight: 700; padding: 10px 20px; cursor: pointer; display: none; }
-    .btn-plan:disabled, .btn-apply:disabled { opacity: .4; cursor: default; }
-    .files { margin-bottom: 16px; }
-    .file-tabs { display: flex; gap: 0; border-bottom: 1px solid #1e1e1e; overflow-x: auto; }
-    .ftab { background: none; border: none; border-bottom: 2px solid transparent;
-            color: #555; font-family: monospace; font-size: 11px; padding: 7px 14px; cursor: pointer; white-space: nowrap; }
-    .ftab.active { color: #00ff88; border-bottom-color: #00ff88; }
-    .file-content { background: #0a0a0a; border: 1px solid #1e1e1e; border-top: none;
-                    border-radius: 0 0 8px 8px; padding: 14px; font-family: monospace;
-                    font-size: 11.5px; line-height: 1.75; color: #c8c8c8; white-space: pre-wrap;
-                    word-break: break-word; max-height: 280px; overflow-y: auto; position: relative; }
-    .copy-file { position: absolute; top: 8px; right: 8px; background: #1a1a1a;
-                 border: 1px solid #2a2a2a; color: #555; border-radius: 4px; font-size: 10px;
-                 font-family: monospace; padding: 3px 8px; cursor: pointer; }
-    .terminal { background: #050505; border: 1px solid #1a1a1a; border-radius: 8px; padding: 14px;
-                font-family: monospace; font-size: 11px; line-height: 1.7; max-height: 240px; overflow-y: auto; }
-    .tline { color: #4a7a4a; }
-    .tline.err { color: #aa4444; }
-    .tline.head { color: #9b88ff; font-weight: bold; }
-    .summary { background: #0a1a0a; border: 1px solid #00ff8830; border-radius: 8px;
-               padding: 14px 16px; margin-bottom: 12px; }
-    .confirm-box { background: #141020; border: 1px solid #9b88ff40; border-radius: 8px;
-                   padding: 14px 16px; margin-bottom: 16px; display: none; }
-    .confirm-box.visible { display: block; }
-    .done-box { background: #0a1a0a; border: 1px solid #00ff8850; border-radius: 8px;
-                padding: 16px; display: none; }
-    .done-box.visible { display: block; }
+    /* prompt */
+    textarea{width:100%;background:#0d0d0d;border:1px solid #222;border-radius:8px;color:#ddd;font-size:14px;padding:14px;resize:vertical;min-height:70px;outline:none;margin-bottom:10px}
+    textarea:focus{border-color:#00ff8855}
+    .btns{display:flex;gap:8px;justify-content:flex-end;margin-bottom:20px}
+    .btn-plan{background:#1a1a2a;border:1px solid #3a3a6a;color:#9b88ff;border-radius:6px;font-size:13px;font-weight:700;padding:10px 20px;cursor:pointer}
+    .btn-apply{background:#00ff88;border:none;color:#000;border-radius:6px;font-size:13px;font-weight:700;padding:10px 20px;cursor:pointer;display:none}
+    .btn-plan:disabled,.btn-apply:disabled{opacity:.4;cursor:default}
 
-    /* ── Azure panel ── */
-    .azure-section { background: #0d0d0d; border: 1px solid #1a1a1a; border-radius: 10px; padding: 20px; margin-bottom: 20px; }
-    .azure-section-title { font-size: 11px; color: #00ccff; font-family: monospace;
-                           letter-spacing: .15em; text-transform: uppercase; margin-bottom: 16px;
-                           display: flex; align-items: center; gap: 8px; }
-    .btn-azure   { background: #00ccff; border: none; color: #000; border-radius: 6px;
-                   font-size: 13px; font-weight: 700; padding: 10px 22px; cursor: pointer; }
-    .btn-confirm { background: #9b88ff; border: none; color: #000; border-radius: 6px;
-                   font-size: 13px; font-weight: 700; padding: 10px 22px; cursor: pointer; }
-    .btn-azure:disabled, .btn-confirm:disabled { opacity: .4; cursor: default; }
-    .token-box { background: #080808; border: 1px solid #00ccff30; border-radius: 8px; padding: 16px; }
-    .token-label { font-size: 10px; color: #444; font-family: monospace; letter-spacing: .15em; margin-bottom: 6px; }
-    .token-val { font-family: monospace; font-size: 15px; font-weight: 700; word-break: break-all; }
-    .token-val.reqid { color: #ffaa00; font-size: 13px; }
-    .token-val.tok   { color: #00ff88; }
-    .divider { border: none; border-top: 1px solid #151515; margin: 24px 0; }
-    .pending-item { background: #0d0d0d; border: 1px solid #1a1a1a; border-radius: 8px;
-                    padding: 14px 16px; margin-bottom: 10px; display: flex; align-items: center; gap: 14px; }
-    .pending-dot { width: 8px; height: 8px; background: #ffaa00; border-radius: 50%; flex-shrink: 0; animation: blink 2s infinite; }
-    .pending-info { flex: 1; }
-    .pending-name { font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 2px; }
-    .pending-meta { font-size: 11px; color: #555; font-family: monospace; }
-    .expires { font-size: 10px; color: #444; font-family: monospace; }
-    .success-box { background: #0a1a0a; border: 1px solid #00ff8840; border-radius: 10px; padding: 20px; }
-    .success-title { font-size: 16px; font-weight: 700; color: #00ff88; margin-bottom: 6px; }
-    .success-url { font-family: monospace; font-size: 12px; color: #4a8a4a; word-break: break-all; }
-    .open-btn { display: inline-block; margin-top: 14px; background: #00ff88; color: #000;
-                font-weight: 700; font-size: 12px; padding: 8px 18px; border-radius: 6px;
-                text-decoration: none; }
-    .badge { background: #00ccff18; border: 1px solid #00ccff40; color: #00ccff;
-             font-size: 10px; font-family: monospace; padding: 2px 8px; border-radius: 4px; }
+    /* steps */
+    .steps{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
+    .step{display:flex;align-items:center;gap:10px;font-size:12px;font-family:monospace;padding:8px 12px;border-radius:6px;background:#0d0d0d;border:1px solid #1a1a1a}
+    .step-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+    .step.active .step-dot{background:#00ff88;animation:blink 1s infinite}
+    .step.done   .step-dot{background:#00ff88}
+    .step.error  .step-dot{background:#ff4444}
+    .step.azure  .step-dot{background:#00ccff;animation:blink 1s infinite}
+    @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+
+    /* hcl files */
+    .files{margin-bottom:16px}
+    .file-tabs{display:flex;gap:0;border-bottom:1px solid #1e1e1e;overflow-x:auto}
+    .ftab{background:none;border:none;border-bottom:2px solid transparent;color:#555;font-family:monospace;font-size:11px;padding:7px 14px;cursor:pointer;white-space:nowrap}
+    .ftab.active{color:#00ff88;border-bottom-color:#00ff88}
+    .file-content{background:#0a0a0a;border:1px solid #1e1e1e;border-top:none;border-radius:0 0 8px 8px;padding:14px;font-family:monospace;font-size:11.5px;line-height:1.75;color:#c8c8c8;white-space:pre-wrap;word-break:break-word;max-height:280px;overflow-y:auto;position:relative}
+    .copy-file{position:absolute;top:8px;right:8px;background:#1a1a1a;border:1px solid #2a2a2a;color:#555;border-radius:4px;font-size:10px;font-family:monospace;padding:3px 8px;cursor:pointer}
+    .terminal{background:#050505;border:1px solid #1a1a1a;border-radius:8px;padding:14px;font-family:monospace;font-size:11px;line-height:1.7;max-height:240px;overflow-y:auto}
+    .tline{color:#4a7a4a}.tline.err{color:#aa4444}.tline.head{color:#9b88ff;font-weight:bold}
+    .summary{background:#0a1a0a;border:1px solid #00ff8830;border-radius:8px;padding:14px 16px;margin-bottom:12px}
+    .confirm-box{background:#141020;border:1px solid #9b88ff40;border-radius:8px;padding:14px 16px;margin-bottom:16px;display:none}
+    .confirm-box.visible{display:block}
+    .done-box{background:#0a1a0a;border:1px solid #00ff8850;border-radius:8px;padding:16px;display:none}
+    .done-box.visible{display:block}
+
+    /* ── Azure inline flow ── */
+    .azure-card{background:#0a1218;border:1px solid #00ccff30;border-radius:10px;padding:20px;margin-bottom:16px;display:none}
+    .azure-card.visible{display:block}
+    .azure-title{font-size:11px;color:#00ccff;font-family:monospace;letter-spacing:.15em;text-transform:uppercase;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+    .badge{background:#00ccff18;border:1px solid #00ccff40;color:#00ccff;font-size:10px;font-family:monospace;padding:2px 8px;border-radius:4px}
+    .form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+    .form-group{display:flex;flex-direction:column;gap:5px}
+    .form-group label{font-size:10px;color:#444;font-family:monospace;letter-spacing:.1em;text-transform:uppercase}
+    .form-group input{background:#0d0d0d;border:1px solid #2a2a2a;color:#ccc;border-radius:6px;padding:8px 12px;font-size:13px;font-family:monospace;outline:none}
+    .form-group input:focus{border-color:#00ccff55}
+    .btn-azure{background:#00ccff;border:none;color:#000;border-radius:6px;font-size:13px;font-weight:700;padding:10px 22px;cursor:pointer}
+    .btn-confirm{background:#9b88ff;border:none;color:#000;border-radius:6px;font-size:13px;font-weight:700;padding:10px 22px;cursor:pointer}
+    .btn-azure:disabled,.btn-confirm:disabled{opacity:.4;cursor:default}
+    .token-display{background:#080808;border:1px solid #1a1a1a;border-radius:8px;padding:14px;margin-bottom:14px}
+    .token-label{font-size:10px;color:#333;font-family:monospace;letter-spacing:.1em;margin-bottom:5px}
+    .token-val{font-family:monospace;font-size:14px;font-weight:700;word-break:break-all}
+    .token-val.reqid{color:#ffaa00;font-size:12px}
+    .token-val.tok{color:#00ff88;font-size:18px}
+    .success-repo{background:#0a1a0a;border:1px solid #00ff8840;border-radius:8px;padding:16px}
+    .success-repo .title{font-size:15px;font-weight:700;color:#00ff88;margin-bottom:6px}
+    .success-repo .url{font-family:monospace;font-size:11px;color:#4a8a4a;word-break:break-all;margin-bottom:12px}
+    .open-btn{background:#00ff88;color:#000;font-weight:700;font-size:12px;padding:8px 18px;border-radius:6px;text-decoration:none;display:inline-block}
   </style>
 </head>
 <body>
 <div class="app">
   <h1>Terraform AI - Unicred</h1>
-  <div class="sub">POC - LLM on Kubernetes - infra e repositorios via IA local</div>
+  <div class="sub">POC — LLM on Kubernetes — infra gerada por IA local</div>
 
-  <div class="tabs">
-    <button class="tab active-infra" id="tab-infra" onclick="switchTab('infra')">
-      ◈ Infraestrutura AWS
-    </button>
-    <button class="tab" id="tab-azure" onclick="switchTab('azure')">
-      ⬡ Repositório Azure DevOps
-    </button>
+  <div class="model-row">
+    <label>Modelo:</label>
+    <select id="model">
+      <option value="llama3.2:3b">llama3.2:3b (CPU)</option>
+      <option value="codellama:7b">codellama:7b</option>
+    </select>
   </div>
 
-  <!-- ══════════════════════════════════════════════════════ INFRA PANEL -->
-  <div class="panel active" id="panel-infra">
-    <div class="model-row">
-      <label>Modelo:</label>
-      <select id="model">
-        <option value="llama3.2:3b">llama3.2:3b (CPU)</option>
-        <option value="codellama:7b">codellama:7b (melhor HCL)</option>
-      </select>
-    </div>
-    <div class="examples">
-      <span style="font-size:10px;color:#333;font-family:monospace;align-self:center">Exemplos:</span>
-      <button class="ex" onclick="fill(this)">bucket S3 unicred-poc na us-east-1</button>
-      <button class="ex" onclick="fill(this)">Lambda Java 21 processador-ted 512MB</button>
-      <button class="ex" onclick="fill(this)">fila SQS eventos-pix com dead letter queue</button>
-    </div>
-    <textarea id="prompt" placeholder="Descreva o recurso AWS que voce quer criar..."></textarea>
-    <div class="btns">
-      <button class="btn-plan" id="btn-plan" onclick="runPlan()">Ver Plan</button>
-      <button class="btn-apply" id="btn-apply" onclick="runApply()">Aplicar na AWS</button>
-    </div>
-    <div id="steps" class="steps"></div>
-    <div id="summary" class="summary" style="display:none"></div>
-    <div id="files" class="files" style="display:none"></div>
-    <div id="confirm" class="confirm-box">
-      <div style="font-size:13px;color:#9b88ff;margin-bottom:8px">Plan concluido. Revise os arquivos e confirme.</div>
-      <div style="font-size:11px;color:#555">Isso ira criar recursos reais na sua conta AWS.</div>
-    </div>
-    <div id="terminal" class="terminal" style="display:none"></div>
-    <div id="done" class="done-box"></div>
+  <div class="examples">
+    <span style="font-size:10px;color:#333;font-family:monospace;align-self:center">AWS:</span>
+    <button class="ex" onclick="fill(this)">bucket S3 unicred-poc na us-east-1</button>
+    <button class="ex" onclick="fill(this)">Lambda Java 21 processador-ted 512MB</button>
+    <button class="ex" onclick="fill(this)">fila SQS eventos-pix com dead letter queue</button>
+    <span style="font-size:10px;color:#333;font-family:monospace;align-self:center;margin-left:6px">Azure:</span>
+    <button class="ex azure" onclick="fill(this)">crie um repositorio test-ia-unicred</button>
+    <button class="ex azure" onclick="fill(this)">criar repositorio meu-servico-backend</button>
   </div>
 
-  <!-- ══════════════════════════════════════════════════════ AZURE PANEL -->
-  <div class="panel" id="panel-azure">
+  <textarea id="prompt" placeholder="Descreva o que voce precisa criar...&#10;Ex: bucket S3, Lambda, fila SQS, repositorio Azure DevOps..."></textarea>
+  <div class="btns">
+    <button class="btn-plan" id="btn-plan" onclick="runPlan()">Ver Plan</button>
+    <button class="btn-apply" id="btn-apply" onclick="runApply()">Aplicar na AWS</button>
+  </div>
 
-    <!-- Seção 1: Solicitar -->
-    <div class="azure-section">
-      <div class="azure-section-title">
-        <span>◈</span> Solicitar criação de repositório
-        <span class="badge">APROVAÇÃO NECESSÁRIA</span>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Organização</label>
-          <input type="text" id="az-org" value="unicredbr" placeholder="unicredbr">
-        </div>
-        <div class="form-group">
-          <label>Projeto</label>
-          <input type="text" id="az-project" value="TI" placeholder="TI">
-        </div>
+  <!-- Steps gerais -->
+  <div id="steps" class="steps"></div>
+
+  <!-- Summary + HCL (infra) -->
+  <div id="summary" class="summary" style="display:none"></div>
+  <div id="files" class="files" style="display:none"></div>
+  <div id="confirm" class="confirm-box">
+    <div style="font-size:13px;color:#9b88ff;margin-bottom:8px">Plan concluido. Revise os arquivos acima e confirme.</div>
+    <div style="font-size:11px;color:#555">Isso ira criar recursos reais na sua conta AWS.</div>
+  </div>
+  <div id="terminal" class="terminal" style="display:none"></div>
+  <div id="done" class="done-box"></div>
+
+  <!-- ── Azure DevOps inline flow ── -->
+
+  <!-- Passo 1: coletar e-mails -->
+  <div class="azure-card" id="az-email-card">
+    <div class="azure-title">
+      <span>⬡</span>
+      Repositório Azure DevOps detectado
+      <span class="badge" id="az-repo-badge">—</span>
+    </div>
+    <p style="font-size:13px;color:#888;margin-bottom:16px">
+      Informe os e-mails para o fluxo de aprovação. O arquiteto receberá um token
+      que deve ser encaminhado a você para confirmar a criação.
+    </p>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Seu e-mail (solicitante)</label>
+        <input type="text" id="az-requester" placeholder="joao@unicred.com.br">
       </div>
       <div class="form-group">
-        <label>Nome do repositório</label>
-        <input type="text" id="az-repo" placeholder="ex: meu-servico-backend">
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Seu e-mail (solicitante)</label>
-          <input type="email" id="az-requester" placeholder="joao@unicred.com.br">
-        </div>
-        <div class="form-group">
-          <label>E-mail do arquiteto (aprovador)</label>
-          <input type="email" id="az-approver" placeholder="felipe@unicred.com.br">
-        </div>
-      </div>
-      <div style="display:flex;justify-content:flex-end">
-        <button class="btn-azure" id="btn-request" onclick="requestRepo()">
-          Solicitar aprovação →
-        </button>
+        <label>E-mail do arquiteto (aprovador)</label>
+        <input type="text" id="az-approver" placeholder="felipe@unicred.com.br">
       </div>
     </div>
-
-    <div id="request-steps" class="steps"></div>
-
-    <!-- Token box — aparece após solicitar -->
-    <div id="token-box" style="display:none" class="azure-section">
-      <div class="azure-section-title"><span>✓</span> Aguardando aprovação</div>
-      <p style="font-size:13px;color:#888;margin-bottom:16px">
-        E-mail enviado para o arquiteto. Quando ele encaminhar o token, cole abaixo para criar o repositório.
-      </p>
-      <div class="token-box" style="margin-bottom:16px">
-        <div class="token-label">REQUEST ID</div>
-        <div class="token-val reqid" id="show-request-id">—</div>
-        <div class="token-label" style="margin-top:12px">TOKEN (recebido do arquiteto)</div>
-        <input type="text" id="confirm-token" placeholder="Cole o token aqui..." style="margin-top:6px">
+    <div style="display:flex;gap:10px;align-items:center">
+      <div style="flex:1;font-size:11px;color:#333;font-family:monospace">
+        Org: <span id="az-org-show" style="color:#555">unicredbr</span> /
+        Projeto: <span id="az-project-show" style="color:#555">TI</span>
       </div>
-      <div style="display:flex;justify-content:flex-end">
-        <button class="btn-confirm" id="btn-confirm" onclick="confirmRepo()">
-          Confirmar e criar repositório
-        </button>
-      </div>
-    </div>
-
-    <div id="confirm-steps" class="steps"></div>
-
-    <!-- Sucesso -->
-    <div id="repo-success" style="display:none" class="success-box">
-      <div class="success-title">✓ Repositório criado!</div>
-      <div class="success-url" id="repo-url">—</div>
-      <a id="repo-link" href="#" target="_blank" class="open-btn">Abrir no Azure DevOps →</a>
-    </div>
-
-    <hr class="divider">
-
-    <!-- Seção 2: Pendentes -->
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-      <div style="font-size:11px;color:#555;font-family:monospace;letter-spacing:.1em;text-transform:uppercase">
-        Aprovações pendentes
-      </div>
-      <button onclick="loadPending()" style="background:none;border:1px solid #1e1e1e;color:#555;border-radius:6px;font-size:11px;padding:5px 12px;cursor:pointer;font-family:monospace">
-        ↻ Atualizar
+      <button class="btn-azure" id="btn-send-request" onclick="sendAzureRequest()">
+        Enviar para aprovação →
       </button>
     </div>
-    <div id="pending-list">
-      <div style="font-size:12px;color:#333;font-family:monospace;padding:12px">
-        Nenhuma solicitação pendente.
-      </div>
-    </div>
+    <div id="az-request-steps" class="steps" style="margin-top:14px"></div>
+  </div>
 
-  </div><!-- /panel-azure -->
+  <!-- Passo 2: aguardar token -->
+  <div class="azure-card" id="az-token-card">
+    <div class="azure-title"><span>✉</span> Aguardando token do arquiteto</div>
+    <p style="font-size:13px;color:#888;margin-bottom:14px">
+      O arquiteto recebeu um e-mail com o token. Quando ele encaminhar, cole abaixo.
+    </p>
+    <div class="token-display">
+      <div class="token-label">REQUEST ID</div>
+      <div class="token-val reqid" id="az-show-reqid">—</div>
+    </div>
+    <div class="form-group" style="margin-bottom:14px">
+      <label>Token recebido do arquiteto</label>
+      <input type="text" id="az-token-input" placeholder="Cole o token aqui...">
+    </div>
+    <div style="display:flex;justify-content:flex-end">
+      <button class="btn-confirm" id="btn-confirm-repo" onclick="confirmAzureRepo()">
+        Confirmar e criar repositório
+      </button>
+    </div>
+    <div id="az-confirm-steps" class="steps" style="margin-top:14px"></div>
+  </div>
+
+  <!-- Passo 3: sucesso -->
+  <div class="azure-card" id="az-success-card">
+    <div class="success-repo">
+      <div class="title">✓ Repositório criado no Azure DevOps!</div>
+      <div class="url" id="az-success-url">—</div>
+      <a id="az-open-link" href="#" target="_blank" class="open-btn">
+        Abrir no Azure DevOps →
+      </a>
+    </div>
+  </div>
+
 </div>
 
 <script>
   var BACKEND = 'http://localhost:8080';
   var currentFiles = [];
-  var currentRequestId = '';
+  var azRepoName = '';
+  var azOrg = 'unicredbr';
+  var azProject = 'TI';
+  var azRequestId = '';
 
-  /* ── Tab switch ─────────────────────────────────────── */
-  function switchTab(tab) {
-    document.getElementById('panel-infra').classList.remove('active');
-    document.getElementById('panel-azure').classList.remove('active');
-    document.getElementById('tab-infra').className = 'tab';
-    document.getElementById('tab-azure').className = 'tab';
-    document.getElementById('panel-' + tab).classList.add('active');
-    if (tab === 'infra') document.getElementById('tab-infra').className = 'tab active-infra';
-    else                 document.getElementById('tab-azure').className = 'tab active-azure';
-    if (tab === 'azure') loadPending();
-  }
-
+  function fill(btn) { document.getElementById('prompt').value = btn.textContent; }
   function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-  /* ── Infra helpers ──────────────────────────────────── */
-  function fill(btn) { document.getElementById('prompt').value = btn.textContent; }
-
-  function addStep(id, label, state, container) {
-    container = container || 'steps';
+  function addStep(id, label, state, containerId) {
+    containerId = containerId || 'steps';
     var el = document.getElementById('step-' + id);
     if (!el) {
       el = document.createElement('div');
       el.id = 'step-' + id;
-      el.className = 'step ' + state;
-      el.innerHTML = '<div class="step-dot"></div><span>' + esc(label) + '</span>';
-      document.getElementById(container).appendChild(el);
-    } else {
-      el.className = 'step ' + state;
-      el.querySelector('span').textContent = label;
+      document.getElementById(containerId).appendChild(el);
     }
+    el.className = 'step ' + state;
+    el.innerHTML = '<div class="step-dot"></div><span>' + esc(label) + '</span>';
   }
 
   function appendTerminal(msg, cls) {
     var t = document.getElementById('terminal');
     t.style.display = 'block';
-    var line = document.createElement('div');
-    line.className = 'tline ' + (cls || '');
-    line.textContent = msg;
-    t.appendChild(line);
+    var d = document.createElement('div');
+    d.className = 'tline ' + (cls||'');
+    d.textContent = msg;
+    t.appendChild(d);
     t.scrollTop = t.scrollHeight;
   }
 
   function showTab(i) {
     var f = currentFiles[i];
     var el = document.getElementById('files');
-    var tabs = currentFiles.map(function(f, idx) {
-      return '<button class="ftab' + (idx === i ? ' active' : '') + '" onclick="showTab(' + idx + ')">' + esc(f.path) + '</button>';
+    var tabs = currentFiles.map(function(f,idx){
+      return '<button class="ftab'+(idx===i?' active':'')+'" onclick="showTab('+idx+')">'+ esc(f.path)+'</button>';
     }).join('');
-    el.innerHTML = '<div class="file-tabs">' + tabs + '</div>' +
-      '<div class="file-content"><button class="copy-file" onclick="copyFile(' + i + ')">copiar</button>' + esc(f.conteudo) + '</div>';
+    el.innerHTML='<div class="file-tabs">'+tabs+'</div>'+
+      '<div class="file-content"><button class="copy-file" onclick="copyFile('+i+')">copiar</button>'+esc(f.conteudo)+'</div>';
   }
   function copyFile(i) { navigator.clipboard.writeText(currentFiles[i].conteudo); }
 
-  async function runAction(action) {
-    var prompt = document.getElementById('prompt').value.trim();
-    var model  = document.getElementById('model').value;
-    if (!prompt) return;
-    document.getElementById('btn-plan').disabled = true;
-    document.getElementById('btn-apply').style.display = 'none';
+  function resetUI() {
     document.getElementById('steps').innerHTML = '';
     document.getElementById('terminal').innerHTML = '';
     document.getElementById('terminal').style.display = 'none';
@@ -324,192 +243,163 @@
     document.getElementById('summary').style.display = 'none';
     document.getElementById('confirm').className = 'confirm-box';
     document.getElementById('done').className = 'done-box';
+    document.getElementById('az-email-card').className = 'azure-card';
+    document.getElementById('az-token-card').className = 'azure-card';
+    document.getElementById('az-success-card').className = 'azure-card';
+    document.getElementById('az-request-steps').innerHTML = '';
+    document.getElementById('az-confirm-steps').innerHTML = '';
+    document.getElementById('btn-apply').style.display = 'none';
+  }
+
+  async function runAction(action) {
+    var prompt = document.getElementById('prompt').value.trim();
+    var model  = document.getElementById('model').value;
+    if (!prompt) return;
+    document.getElementById('btn-plan').disabled = true;
+    resetUI();
     try {
       var res = await fetch(BACKEND + '/generate', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
+        method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({prompt, model, action})
       });
-      var reader = res.body.getReader();
+      var reader  = res.body.getReader();
       var decoder = new TextDecoder();
-      var buf = '';
+      var buf     = '';
       while (true) {
         var chunk = await reader.read();
         if (chunk.done) break;
-        buf += decoder.decode(chunk.value, {stream: true});
+        buf += decoder.decode(chunk.value, {stream:true});
         var lines = buf.split('\n');
         buf = lines.pop();
-        lines.forEach(function(line) {
+        lines.forEach(function(line){
           if (!line.startsWith('data: ')) return;
-          try { handleEvent(JSON.parse(line.slice(6)), action); } catch(e) {}
+          try { handleEvent(JSON.parse(line.slice(6)), action); } catch(e){}
         });
       }
-    } catch(e) { addStep('conn', 'Erro: ' + e.message, 'error'); }
+    } catch(e) { addStep('conn', 'Erro: '+e.message, 'error'); }
     document.getElementById('btn-plan').disabled = false;
   }
 
   function handleEvent(ev, action) {
-    if (ev.step === 'llm')       addStep('llm', ev.msg, 'active');
-    else if (ev.step === 'hcl') {
-      addStep('llm', 'Recurso detectado', 'done');
+    // ── Infra ──
+    if (ev.step==='llm')       addStep('llm', ev.msg, 'active');
+    else if (ev.step==='hcl') {
+      addStep('llm','Recurso detectado','done');
       currentFiles = ev.files;
       var s = document.getElementById('summary');
-      s.style.display = 'block';
-      s.innerHTML = '<div style="font-size:10px;color:#00ff88;font-family:monospace;letter-spacing:.15em;margin-bottom:4px">' + esc(ev.recurso) + '</div>' +
-        '<div style="font-size:15px;font-weight:700;color:#fff">' + esc(ev.resumo) + '</div>';
-      document.getElementById('files').style.display = 'block';
+      s.style.display='block';
+      s.innerHTML='<div style="font-size:10px;color:#00ff88;font-family:monospace;letter-spacing:.15em;margin-bottom:4px">'+esc(ev.recurso)+'</div>'+
+        '<div style="font-size:15px;font-weight:700;color:#fff">'+esc(ev.resumo)+'</div>';
+      document.getElementById('files').style.display='block';
       showTab(0);
     }
-    else if (ev.step === 'init')     addStep('init', 'terraform init...', 'active');
-    else if (ev.step === 'init_out' && ev.msg && ev.msg.includes('successfully')) addStep('init', 'terraform init ok', 'done');
-    else if (ev.step === 'plan')     { addStep('plan', 'terraform plan...', 'active'); appendTerminal('--- terraform plan ---', 'head'); }
-    else if (ev.step === 'plan_out') appendTerminal(ev.msg);
-    else if (ev.step === 'plan_done') {
-      addStep('plan', 'Plan concluido', 'done');
-      if (action === 'plan') { document.getElementById('confirm').className = 'confirm-box visible'; document.getElementById('btn-apply').style.display = 'inline-block'; }
+    else if (ev.step==='init')     addStep('init','terraform init...','active');
+    else if (ev.step==='init_out'&&ev.msg&&ev.msg.includes('successfully')) addStep('init','terraform init ok','done');
+    else if (ev.step==='plan')     { addStep('plan','terraform plan...','active'); appendTerminal('--- terraform plan ---','head'); }
+    else if (ev.step==='plan_out') appendTerminal(ev.msg);
+    else if (ev.step==='plan_done'){
+      addStep('plan','Plan concluido','done');
+      if (action==='plan'){ document.getElementById('confirm').className='confirm-box visible'; document.getElementById('btn-apply').style.display='inline-block'; }
     }
-    else if (ev.step === 'apply')     { addStep('apply', 'Aplicando na AWS...', 'active'); appendTerminal('--- terraform apply ---', 'head'); }
-    else if (ev.step === 'apply_out') appendTerminal(ev.msg);
-    else if (ev.step === 'done') {
-      addStep('apply', 'Recurso criado!', 'done');
-      document.getElementById('confirm').className = 'confirm-box';
-      var d = document.getElementById('done');
-      d.className = 'done-box visible';
-      d.innerHTML = '<div style="font-size:13px;color:#00ff88;font-weight:700;margin-bottom:4px">Recurso criado com sucesso!</div>' +
-        '<div style="font-size:11px;color:#4a8a4a;font-family:monospace">' + esc(ev.msg) + '</div>';
+    else if (ev.step==='apply')     { addStep('apply','Aplicando na AWS...','active'); appendTerminal('--- terraform apply ---','head'); }
+    else if (ev.step==='apply_out') appendTerminal(ev.msg);
+    else if (ev.step==='done') {
+      addStep('apply','Recurso criado!','done');
+      document.getElementById('confirm').className='confirm-box';
+      var d=document.getElementById('done');
+      d.className='done-box visible';
+      d.innerHTML='<div style="font-size:13px;color:#00ff88;font-weight:700;margin-bottom:4px">Recurso criado com sucesso!</div>'+
+        '<div style="font-size:11px;color:#4a8a4a;font-family:monospace">'+esc(ev.msg)+'</div>';
     }
-    else if (ev.step === 'error') { addStep('error', 'Erro: ' + ev.msg, 'error'); appendTerminal(ev.msg, 'err'); }
+    else if (ev.step==='error') { addStep('error','Erro: '+ev.msg,'error'); appendTerminal(ev.msg,'err'); }
+
+    // ── Azure DevOps ──
+    else if (ev.step==='azure_request') {
+      addStep('llm','Azure DevOps detectado: '+ev.repo_name,'done');
+      azRepoName = ev.repo_name;
+      azOrg      = ev.org || 'unicredbr';
+      azProject  = ev.project || 'TI';
+      document.getElementById('az-repo-badge').textContent = ev.repo_name;
+      document.getElementById('az-org-show').textContent     = azOrg;
+      document.getElementById('az-project-show').textContent = azProject;
+      document.getElementById('az-email-card').className = 'azure-card visible';
+      document.getElementById('az-requester').focus();
+    }
   }
 
   function runPlan()  { runAction('plan'); }
   function runApply() {
-    document.getElementById('confirm').className = 'confirm-box';
-    document.getElementById('btn-apply').style.display = 'none';
+    document.getElementById('confirm').className='confirm-box';
+    document.getElementById('btn-apply').style.display='none';
     runAction('apply');
   }
 
-  /* ── Azure helpers ──────────────────────────────────── */
-  function azAddStep(id, label, state) { addStep(id, label, state, 'request-steps'); }
-  function azConfStep(id, label, state) { addStep(id, label, state, 'confirm-steps'); }
-
-  async function requestRepo() {
-    var org       = document.getElementById('az-org').value.trim();
-    var project   = document.getElementById('az-project').value.trim();
-    var repo      = document.getElementById('az-repo').value.trim();
+  /* ── Azure flow ─────────────────────────────────────── */
+  async function sendAzureRequest() {
     var requester = document.getElementById('az-requester').value.trim();
     var approver  = document.getElementById('az-approver').value.trim();
+    if (!requester || !approver) { alert('Preencha os dois e-mails.'); return; }
 
-    if (!repo || !requester || !approver) {
-      alert('Preencha todos os campos.'); return;
-    }
-
-    document.getElementById('btn-request').disabled = true;
-    document.getElementById('request-steps').innerHTML = '';
-    document.getElementById('token-box').style.display = 'none';
-    document.getElementById('repo-success').style.display = 'none';
-
-    azAddStep('req', 'Enviando solicitação...', 'active');
+    document.getElementById('btn-send-request').disabled = true;
+    addStep('az-send','Enviando solicitacao...','azure','az-request-steps');
 
     try {
-      var res = await fetch(BACKEND + '/azure/request-repo', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({org, project, repo_name: repo, requester_email: requester, approver_email: approver})
+      var res  = await fetch(BACKEND+'/azure/request-repo',{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          org: azOrg, project: azProject,
+          repo_name: azRepoName,
+          requester_email: requester,
+          approver_email:  approver
+        })
       });
       var data = await res.json();
+      if (!res.ok) throw new Error(data.detail||'Erro');
 
-      if (!res.ok) throw new Error(data.detail || 'Erro desconhecido');
+      addStep('az-send','Solicitacao criada','done','az-request-steps');
+      addStep('az-email','E-mail enviado para '+approver,'done','az-request-steps');
 
-      azAddStep('req', 'Solicitação criada', 'done');
-      azAddStep('email', 'E-mail enviado para ' + approver, 'info');
-
-      currentRequestId = data.request_id;
-      document.getElementById('show-request-id').textContent = data.request_id;
-      document.getElementById('confirm-token').value = '';
-      document.getElementById('token-box').style.display = 'block';
+      azRequestId = data.request_id;
+      document.getElementById('az-show-reqid').textContent = data.request_id;
+      document.getElementById('az-token-input').value = '';
+      document.getElementById('az-email-card').className = 'azure-card';
+      document.getElementById('az-token-card').className = 'azure-card visible';
+      document.getElementById('az-token-input').focus();
 
     } catch(e) {
-      azAddStep('req', 'Erro: ' + e.message, 'error');
+      addStep('az-send','Erro: '+e.message,'error','az-request-steps');
     }
-    document.getElementById('btn-request').disabled = false;
+    document.getElementById('btn-send-request').disabled = false;
   }
 
-  async function confirmRepo() {
-    var token = document.getElementById('confirm-token').value.trim();
+  async function confirmAzureRepo() {
+    var token = document.getElementById('az-token-input').value.trim();
     if (!token) { alert('Cole o token recebido do arquiteto.'); return; }
 
-    document.getElementById('btn-confirm').disabled = true;
-    document.getElementById('confirm-steps').innerHTML = '';
-    document.getElementById('repo-success').style.display = 'none';
-
-    azConfStep('conf', 'Validando token...', 'active');
+    document.getElementById('btn-confirm-repo').disabled = true;
+    addStep('az-conf','Validando token...','azure','az-confirm-steps');
 
     try {
-      var res = await fetch(BACKEND + '/azure/confirm-repo', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({request_id: currentRequestId, token: token})
+      var res  = await fetch(BACKEND+'/azure/confirm-repo',{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({request_id: azRequestId, token})
       });
       var data = await res.json();
+      if (!res.ok) throw new Error(data.detail||'Token invalido');
 
-      if (!res.ok) throw new Error(data.detail || 'Token invalido ou expirado');
+      addStep('az-conf','Token valido','done','az-confirm-steps');
+      addStep('az-create','Repositorio '+data.repo+' criado!','done','az-confirm-steps');
 
-      azConfStep('conf', 'Token valido', 'done');
-      azConfStep('create', 'Criando repositório ' + data.repo + '...', 'active');
-      azConfStep('create', 'Repositório criado!', 'done');
-
-      document.getElementById('token-box').style.display = 'none';
-      document.getElementById('repo-success').style.display = 'block';
-      document.getElementById('repo-url').textContent = data.web_url;
-      document.getElementById('repo-link').href = data.web_url;
-
-      loadPending();
+      document.getElementById('az-token-card').className = 'azure-card';
+      document.getElementById('az-success-url').textContent  = data.web_url;
+      document.getElementById('az-open-link').href = data.web_url;
+      document.getElementById('az-success-card').className = 'azure-card visible';
 
     } catch(e) {
-      azConfStep('conf', 'Erro: ' + e.message, 'error');
+      addStep('az-conf','Erro: '+e.message,'error','az-confirm-steps');
     }
-    document.getElementById('btn-confirm').disabled = false;
+    document.getElementById('btn-confirm-repo').disabled = false;
   }
-
-  async function loadPending() {
-    try {
-      var res  = await fetch(BACKEND + '/azure/pending');
-      var list = await res.json();
-      var el   = document.getElementById('pending-list');
-
-      if (!list.length) {
-        el.innerHTML = '<div style="font-size:12px;color:#333;font-family:monospace;padding:12px">Nenhuma solicitação pendente.</div>';
-        return;
-      }
-
-      el.innerHTML = list.map(function(r) {
-        return '<div class="pending-item">' +
-          '<div class="pending-dot"></div>' +
-          '<div class="pending-info">' +
-            '<div class="pending-name">' + esc(r.repo_name) + '</div>' +
-            '<div class="pending-meta">' + esc(r.org) + '/' + esc(r.project) +
-              ' · por ' + esc(r.requester_email) + '</div>' +
-          '</div>' +
-          '<div class="expires">⏱ ' + r.expires_in_min + 'min</div>' +
-          '<button onclick="fillConfirm(\'' + esc(r.request_id) + '\')" ' +
-            'style="background:#1a1a2a;border:1px solid #3a3a6a;color:#9b88ff;border-radius:6px;font-size:11px;padding:5px 12px;cursor:pointer">' +
-            'Usar este →' +
-          '</button>' +
-        '</div>';
-      }).join('');
-    } catch(e) {
-      document.getElementById('pending-list').innerHTML =
-        '<div style="font-size:11px;color:#555;font-family:monospace;padding:12px">Erro ao carregar: ' + esc(e.message) + '</div>';
-    }
-  }
-
-  function fillConfirm(requestId) {
-    currentRequestId = requestId;
-    document.getElementById('show-request-id').textContent = requestId;
-    document.getElementById('token-box').style.display = 'block';
-    document.getElementById('confirm-token').focus();
-    window.scrollTo(0, document.getElementById('token-box').offsetTop - 20);
-  }
-
-  // Carregar pendentes ao abrir
-  loadPending();
 </script>
 </body>
 </html>
