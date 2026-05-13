@@ -1,8 +1,5 @@
 """
-Integração Microsoft Teams.
-
-/teams/message  — recebe mensagens do Power Automate (Incoming Webhook flow)
-/teams/webhook  — Outgoing Webhook direto do Teams (se disponível)
+Integração Microsoft Teams via Power Automate + Incoming Webhook.
 """
 import json
 import os
@@ -11,94 +8,12 @@ import asyncio
 
 import httpx
 from fastapi import APIRouter, Request
-from pydantic import BaseModel
 
 router = APIRouter(prefix="/teams", tags=["teams"])
 
 TEAMS_WEBHOOK_URL = os.getenv("TEAMS_WEBHOOK_URL", "")
 BACKEND_URL       = os.getenv("BACKEND_URL", "http://localhost:8080")
 OLLAMA_MODEL      = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
-
-
-# ── Pydantic models ───────────────────────────────────────────────────────────
-
-class TeamsMessage(BaseModel):
-    text: str
-    from_name: str = "usuario"
-
-    class Config:
-        # aceita tanto "from" quanto "from_name"
-        populate_by_name = True
-        fields = {"from_name": {"alias": "from"}}
-
-
-# ── Adaptive Cards helpers ────────────────────────────────────────────────────
-
-async def _post_to_teams(card: dict) -> bool:
-    if not TEAMS_WEBHOOK_URL:
-        print("[teams] TEAMS_WEBHOOK_URL nao configurado", flush=True)
-        return False
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            res = await client.post(
-                TEAMS_WEBHOOK_URL,
-                json=card,
-                headers={"Content-Type": "application/json"},
-            )
-            print(f"[teams] card enviado: {res.status_code}", flush=True)
-            return res.status_code in (200, 202)
-    except Exception as e:
-        print(f"[teams] ERRO ao enviar card: {e}", flush=True)
-        return False
-
-
-def _simple_card(title: str, text: str, color: str = "accent") -> dict:
-    return {
-        "type": "message",
-        "attachments": [{
-            "contentType": "application/vnd.microsoft.card.adaptive",
-            "content": {
-                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "type": "AdaptiveCard",
-                "version": "1.4",
-                "body": [
-                    {"type": "TextBlock", "text": title,
-                     "weight": "Bolder", "color": color},
-                    {"type": "TextBlock", "text": text,
-                     "wrap": True},
-                ],
-            },
-        }],
-    }
-
-
-def _result_card(
-    title: str, color: str,
-    facts: list,
-    action_url: str = None, action_label: str = None,
-) -> dict:
-    content = {
-        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-        "type": "AdaptiveCard", "version": "1.4",
-        "body": [
-            {"type": "TextBlock", "text": title,
-             "weight": "Bolder", "color": color, "size": "Medium"},
-            {"type": "FactSet",
-             "facts": [{"title": f["label"], "value": f["value"]} for f in facts]},
-        ],
-    }
-    if action_url:
-        content["actions"] = [{
-            "type": "Action.OpenUrl",
-            "title": action_label or "Abrir →",
-            "url":   action_url,
-        }]
-    return {
-        "type": "message",
-        "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive",
-                         "content": content}],
-    }
-
 
 HELP_TEXT = (
     "**aiterraform** — comandos:\n\n"
@@ -113,13 +28,51 @@ HELP_TEXT = (
 )
 
 
+# ── Card helpers ─────────────────────────────────────────────────────────────
+
+async def _post_card(card: dict) -> bool:
+    """Envia Adaptive Card para o canal Teams via Incoming Webhook."""
+    if not TEAMS_WEBHOOK_URL:
+        print("[teams] TEAMS_WEBHOOK_URL nao configurado", flush=True)
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await client.post(
+                TEAMS_WEBHOOK_URL, json=card,
+                headers={"Content-Type": "application/json"},
+            )
+            print(f"[teams] card enviado: {res.status_code}", flush=True)
+            return res.status_code in (200, 202)
+    except Exception as e:
+        print(f"[teams] ERRO ao enviar card: {e}", flush=True)
+        return False
+
+
+def _card(title: str, text: str, color: str = "accent", url: str = None) -> dict:
+    body = [
+        {"type": "TextBlock", "text": title, "weight": "Bolder",
+         "color": color, "size": "Medium"},
+        {"type": "TextBlock", "text": text, "wrap": True},
+    ]
+    content = {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard", "version": "1.4", "body": body,
+    }
+    if url:
+        content["actions"] = [{"type": "Action.OpenUrl", "title": "Abrir →", "url": url}]
+    return {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": content,
+        }],
+    }
+
+
 # ── Pipeline runner ───────────────────────────────────────────────────────────
 
-async def _run_pipeline_and_notify(prompt: str, action: str, sender: str):
-    """
-    Chama o /generate em streaming e envia o resultado como card no Teams.
-    Executado em background para não bloquear a resposta ao Power Automate.
-    """
+async def _run(prompt: str, action: str, sender: str):
+    """Chama /generate e envia resultado como card no Teams."""
     hcl_ev     = {}
     plan_lines = []
     success    = False
@@ -129,7 +82,7 @@ async def _run_pipeline_and_notify(prompt: str, action: str, sender: str):
         async with httpx.AsyncClient(timeout=300) as client:
             async with client.stream(
                 "POST", f"{BACKEND_URL}/generate",
-                json={"prompt": prompt, "model": OLLAMA_MODEL, "action": action}
+                json={"prompt": prompt, "model": OLLAMA_MODEL, "action": action},
             ) as resp:
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
@@ -139,42 +92,35 @@ async def _run_pipeline_and_notify(prompt: str, action: str, sender: str):
                     except Exception:
                         continue
 
-                    step = ev.get("step", "")
-
-                    if step == "hcl":
+                    s = ev.get("step", "")
+                    if s == "hcl":
                         hcl_ev = ev
-
-                    elif step in ("plan_out", "apply_out", "init_out"):
+                    elif s in ("plan_out", "apply_out"):
                         msg = ev.get("msg", "")
                         if msg:
                             plan_lines.append(msg)
-
-                    elif step == "done":
+                    elif s == "done":
                         success = True
-
-                    elif step == "azure_request":
-                        await _post_to_teams(_simple_card(
-                            title=f"⬡ Repositório Azure DevOps detectado",
-                            text=(
-                                f"Repositório **{ev.get('repo_name')}** em "
-                                f"`{ev.get('org')}/{ev.get('project')}`.\n\n"
-                                "Acesse o frontend para preencher os e-mails e confirmar a criação."
-                            ),
-                            color="accent",
+                    elif s == "azure_request":
+                        await _post_card(_card(
+                            "⬡ Repositório Azure DevOps detectado",
+                            f"Repositório **{ev.get('repo_name')}** em "
+                            f"`{ev.get('org')}/{ev.get('project')}`.\n\n"
+                            "Acesse o frontend para preencher os e-mails e confirmar.",
+                            "accent",
                         ))
                         return
-
-                    elif step == "error":
-                        error_msg = ev.get("msg", "Erro desconhecido")
+                    elif s == "error":
+                        error_msg = ev.get("msg", "")
 
     except Exception as e:
         error_msg = str(e)
 
     if error_msg:
-        await _post_to_teams(_simple_card(
-            title="❌ Erro — aiterraform",
-            text=f"**Pedido:** {prompt[:100]}\n\n**Erro:** {error_msg}",
-            color="attention",
+        await _post_card(_card(
+            "❌ Erro — aiterraform",
+            f"**Pedido:** {prompt[:100]}\n\n**Erro:** {error_msg}",
+            "attention",
         ))
         return
 
@@ -183,46 +129,67 @@ async def _run_pipeline_and_notify(prompt: str, action: str, sender: str):
 
     recurso = hcl_ev.get("recurso", "Recurso AWS")
     resumo  = hcl_ev.get("resumo", "")
-
-    # Resumo do plan/apply
-    plan_summary = next(
+    plan_s  = next(
         (l for l in plan_lines if "Plan:" in l or "to add" in l or "to destroy" in l),
-        ""
+        "",
     )
 
     if success and action == "apply":
-        await _post_to_teams(_result_card(
-            title=f"✅ Recurso criado — {recurso}",
-            color="good",
-            facts=[
-                {"label": "Recurso",       "value": recurso},
-                {"label": "Descrição",     "value": resumo},
-                {"label": "Solicitado por","value": sender},
-                {"label": "Resultado",     "value": plan_summary or "Apply concluído"},
-            ],
+        await _post_card(_card(
+            f"✅ Recurso criado — {recurso}",
+            f"**{resumo}**\n\nSolicitado por: {sender}\n{plan_s}",
+            "good",
         ))
-
     elif success and action == "delete":
-        await _post_to_teams(_result_card(
-            title=f"🗑 Recurso destruído — {recurso}",
-            color="warning",
-            facts=[
-                {"label": "Recurso",       "value": recurso},
-                {"label": "Descrição",     "value": resumo},
-                {"label": "Solicitado por","value": sender},
-            ],
+        await _post_card(_card(
+            f"🗑 Recurso destruído — {recurso}",
+            f"**{resumo}**\n\nSolicitado por: {sender}",
+            "warning",
+        ))
+    elif action == "plan":
+        await _post_card(_card(
+            f"👁 Plan gerado — {recurso}",
+            f"**{resumo}**\n\n{plan_s}\n\nAcesse o frontend para aplicar.",
+            "accent",
         ))
 
-    elif action == "plan":
-        await _post_to_teams(_result_card(
-            title=f"👁 Plan gerado — {recurso}",
-            color="accent",
-            facts=[
-                {"label": "Recurso",   "value": recurso},
-                {"label": "Descrição", "value": resumo},
-                {"label": "Plan",      "value": plan_summary or "Ver frontend para detalhes"},
-            ],
-        ))
+
+# ── Text extraction ───────────────────────────────────────────────────────────
+
+def _extract_text(body: dict) -> str:
+    """
+    Extrai o texto da mensagem de qualquer estrutura que o Power Automate envie.
+    Tenta vários caminhos de campos antes de desistir.
+    """
+    # Campos diretos
+    for key in ("text", "Text", "content", "Content", "message", "Message"):
+        val = body.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+
+    # Campo "body" como dict (ex: Teams schema nativo)
+    body_field = body.get("body") or body.get("Body")
+    if isinstance(body_field, dict):
+        for sub in ("content", "Content", "text", "Text"):
+            val = body_field.get(sub)
+            if isinstance(val, str) and val.strip():
+                return val
+
+    return ""
+
+
+def _extract_sender(body: dict) -> str:
+    """Extrai nome do remetente de qualquer estrutura."""
+    for key in ("from", "From", "sender", "Sender", "from_name", "displayName"):
+        val = body.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+        if isinstance(val, dict):
+            for sub in ("displayName", "name", "user"):
+                sub_val = val.get(sub)
+                if isinstance(sub_val, str) and sub_val.strip():
+                    return sub_val
+    return "usuario"
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -232,62 +199,73 @@ async def _run_pipeline_and_notify(prompt: str, action: str, sender: str):
     summary="Recebe mensagem do Power Automate",
     description=(
         "Endpoint chamado pelo Power Automate quando uma mensagem é enviada no canal Teams.\n\n"
-        "Processa o prompt via LLM + Terraform e envia o resultado de volta "
-        "ao canal via Incoming Webhook (TEAMS_WEBHOOK_URL).\n\n"
-        "**Body esperado:**\n"
+        "Aceita JSON com qualquer estrutura — extrai automaticamente o texto e remetente.\n\n"
+        "**Body mínimo:**\n"
         "```json\n"
-        "{\"text\": \"@aiterraform crie um bucket S3...\", \"from\": \"Nome do Usuário\"}\n"
-        "```"
+        "{\"text\": \"crie um bucket S3...\", \"from\": \"Nome\"}\n"
+        "```\n\n"
+        "**Para debug:** se o campo `text` chegar vazio, o card retorna `body_keys` "
+        "mostrando o que foi recebido."
     ),
 )
 async def receive_message(request: Request):
-    body = await request.json()
+    content_type = request.headers.get("content-type", "")
 
-    # Aceitar tanto "from" quanto "from_name"
-    raw    = body.get("text", "")
-    sender = body.get("from", body.get("from_name", "usuario"))
+    # Aceitar JSON e text/plain
+    if "json" in content_type:
+        try:
+            body = await request.json()
+        except Exception:
+            raw = await request.body()
+            body = {"text": raw.decode("utf-8", errors="replace")}
+    else:
+        raw  = await request.body()
+        text = raw.decode("utf-8", errors="replace")
+        body = {"text": text}
 
-    # Limpar HTML do Teams e remover menção ao bot
-    clean  = re.sub(r"<[^>]+>", "", raw).strip()
+    print(f"[teams] RAW BODY: {body}", flush=True)
+
+    text   = _extract_text(body)
+    sender = _extract_sender(body)
+
+    print(f"[teams] texto={repr(text[:80])} remetente={repr(sender)}", flush=True)
+
+    # Body vazio — enviar card de diagnóstico com os campos recebidos
+    if not text.strip():
+        keys = list(body.keys())
+        await _post_card(_card(
+            "⚠ aiterraform — mensagem vazia",
+            f"Campos recebidos: `{keys}`\n\n"
+            "No Power Automate, configure o Body do HTTP como:\n"
+            '`{"text": "@{triggerBody()?[\'body\']?[\'content\']}"}`',
+            "warning",
+        ))
+        return {"status": "ok", "debug": "body_vazio", "body_keys": keys}
+
+    # Limpar HTML e menção ao bot
+    clean  = re.sub(r"<[^>]+>", "", text).strip()
     prompt = re.sub(r"@aiterraform\s*", "", clean, flags=re.IGNORECASE).strip()
 
-    print(f"[teams] mensagem de {sender}: {prompt[:80]}", flush=True)
-
     if not prompt or prompt.lower() in ("ajuda", "help", "?", "comandos"):
-        asyncio.create_task(_post_to_teams(_simple_card(
+        asyncio.create_task(_post_card(_card(
             "✦ aiterraform — ajuda", HELP_TEXT, "accent"
         )))
         return {"status": "ok", "action": "help"}
 
-    # Detectar action pelo prompt
+    # Detectar action
     if re.search(r"\bdelet[ae][r]?\b|\bremov[e]?[r]?\b|\bdestrui[r]?\b", prompt, re.IGNORECASE):
         action = "delete"
-    elif re.search(r"\bplanejar?\b|\bver plan\b|\bonly plan\b", prompt, re.IGNORECASE):
+    elif re.search(r"\bplanejar?\b|\bver plan\b", prompt, re.IGNORECASE):
         action = "plan"
     else:
         action = "apply"
 
-    print(f"[teams] action={action} prompt={prompt[:60]}", flush=True)
+    print(f"[teams] action={action} prompt={repr(prompt[:60])}", flush=True)
 
-    # Confirmar recebimento imediatamente (Teams/Power Automate tem timeout curto)
-    asyncio.create_task(_run_pipeline_and_notify(prompt, action, sender))
-
-    return {
-        "status":  "processing",
-        "prompt":  prompt,
-        "action":  action,
-        "from":    sender,
-    }
+    asyncio.create_task(_run(prompt, action, sender))
+    return {"status": "processing", "prompt": prompt, "action": action}
 
 
-@router.get(
-    "/message",
-    summary="Health check do endpoint Teams",
-    include_in_schema=False,
-)
+@router.get("/message", include_in_schema=False)
 async def message_health():
-    return {
-        "status": "ok",
-        "webhook_configured": bool(TEAMS_WEBHOOK_URL),
-        "model": OLLAMA_MODEL,
-    }
+    return {"status": "ok", "webhook_configured": bool(TEAMS_WEBHOOK_URL)}
