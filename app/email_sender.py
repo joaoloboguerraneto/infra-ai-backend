@@ -1,6 +1,6 @@
 """
-Envio de e-mail via AWS SES (usa as credenciais AWS já no pod)
-ou SMTP (configurado via variáveis de ambiente).
+Envio de e-mail via AWS SES ou SMTP.
+Configurado via variáveis de ambiente.
 """
 import os
 import smtplib
@@ -9,17 +9,14 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 
-# ── Config via env ────────────────────────────────────────────────────────────
-EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "ses")   # "ses" ou "smtp"
-EMAIL_FROM     = os.getenv("EMAIL_FROM", "noreply@unicred.com.br")
+EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "ses")
+EMAIL_FROM     = os.getenv("EMAIL_FROM",     "noreply@unicred.com.br")
 
-# SMTP
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 
-# AWS SES (usa as credenciais AWS já presentes no pod)
 SES_REGION = os.getenv("SES_REGION", os.getenv("AWS_REGION", "us-east-1"))
 
 
@@ -33,8 +30,6 @@ def send_approval_email(
     token:       str,
     expires_min: int,
 ) -> None:
-    """Envia e-mail de aprovação para o arquiteto."""
-
     subject = f"[Aprovação Necessária] Criar repositório '{repo_name}' no Azure DevOps"
 
     html = f"""\
@@ -56,7 +51,7 @@ def send_approval_email(
     </table>
 
     <p style="color:#888;font-size:12px;margin-bottom:12px">
-      Encaminhe o token abaixo para o solicitante para que o repositório seja criado:
+      Encaminhe o token abaixo para o solicitante:
     </p>
 
     <div style="background:#111;border:1px solid #222;border-radius:8px;padding:16px;margin-bottom:20px">
@@ -100,8 +95,6 @@ def send_approval_email(
 
 
 def send_confirmation_email(to: str, repo_name: str, org: str, project: str, url: str) -> None:
-    """Notifica o solicitante que o repositório foi criado."""
-
     subject = f"[Concluído] Repositório '{repo_name}' criado no Azure DevOps"
 
     html = f"""\
@@ -135,10 +128,10 @@ def _send_via_ses(to: str, subject: str, html: str, text: str) -> None:
         Source=EMAIL_FROM,
         Destination={"ToAddresses": [to]},
         Message={
-            "Subject": {"Data": subject, "Charset": "UTF-8"},
+            "Subject": {"Data": subject,  "Charset": "UTF-8"},
             "Body": {
-                "Text": {"Data": text,  "Charset": "UTF-8"},
-                "Html": {"Data": html,  "Charset": "UTF-8"},
+                "Text": {"Data": text, "Charset": "UTF-8"},
+                "Html": {"Data": html, "Charset": "UTF-8"},
             },
         },
     )
@@ -146,18 +139,40 @@ def _send_via_ses(to: str, subject: str, html: str, text: str) -> None:
 
 
 def _send_via_smtp(to: str, subject: str, html: str, text: str) -> None:
+    # Reler vars em runtime — podem ter sido injetadas após import do módulo
+    smtp_host = os.getenv("SMTP_HOST", SMTP_HOST)
+    smtp_port = int(os.getenv("SMTP_PORT", str(SMTP_PORT)))
+    smtp_user = os.getenv("SMTP_USER", SMTP_USER)
+    smtp_pass = os.getenv("SMTP_PASS", SMTP_PASS)
+    from_addr = os.getenv("EMAIL_FROM", EMAIL_FROM)
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = EMAIL_FROM
+    msg["From"]    = from_addr
     msg["To"]      = to
     msg.attach(MIMEText(text, "plain"))
-    msg.attach(MIMEText(html, "html"))
+    msg.attach(MIMEText(html,  "html"))
 
+    # SSL context — usa CA bundle do sistema quando disponível,
+    # desabilita verificação como fallback para containers slim
     ctx = ssl.create_default_context()
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+    try:
+        ctx.load_default_certs()
+    except Exception:
+        pass
+
+    if not ctx.get_ca_certs():
+        # CA bundle não disponível no container — desabilitar verificação
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode    = ssl.CERT_NONE
+        print("[email] AVISO: usando SSL sem verificação de certificado", flush=True)
+
+    with smtplib.SMTP(smtp_host, smtp_port) as server:
         server.ehlo()
         server.starttls(context=ctx)
-        server.login(SMTP_USER, SMTP_PASS)
-        server.sendmail(EMAIL_FROM, to, msg.as_string())
+        server.ehlo()                          # obrigatório após STARTTLS
+        server.login(smtp_user, smtp_pass)
+        server.sendmail(from_addr, to, msg.as_string())
 
     print(f"[email] SMTP: enviado para {to}", flush=True)

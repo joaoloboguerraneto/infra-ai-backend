@@ -17,21 +17,22 @@ spec:
     spec:
       containers:
         - name: backend
-          # Para POC local via kind:
-          #   docker build -t terraform-ai-backend:latest .
-          #   kind load docker-image terraform-ai-backend:latest --name terraform-ai
           image: terraform-ai-backend:latest
-          imagePullPolicy: Never   # troque por Always ao usar registry externo
+          imagePullPolicy: Never
           ports:
             - containerPort: 8080
           env:
+            # ── Ollama ──────────────────────────────────────────────
             - name: OLLAMA_URL
               value: "http://ollama.ai-infra.svc.cluster.local:11434"
+
+            # ── Terraform State ─────────────────────────────────────
             - name: TF_STATE_BUCKET
               value: "unicred-terraform-state-poc"
             - name: AWS_REGION
               value: "us-east-1"
-            # Credenciais via Secret (remova ao usar IRSA no EKS)
+
+            # ── AWS Credentials (remova ao usar IRSA no EKS) ────────
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
@@ -47,6 +48,40 @@ spec:
                 secretKeyRef:
                   name: aws-credentials
                   key: AWS_DEFAULT_REGION
+
+            # ── Azure DevOps ─────────────────────────────────────────
+            - name: AZURE_DEVOPS_ORG
+              value: "unicredbr"
+            - name: AZURE_DEVOPS_PAT
+              valueFrom:
+                secretKeyRef:
+                  name: azure-devops-credentials
+                  key: AZURE_DEVOPS_PAT
+                  optional: true
+
+            # ── E-mail ───────────────────────────────────────────────
+            # EMAIL_PROVIDER: "ses" (padrão) ou "smtp"
+            - name: EMAIL_PROVIDER
+              value: "smtp"
+            - name: EMAIL_FROM
+              value: "joaolgn1985@gmail.com"
+            - name: SMTP_HOST
+              value: "smtp.gmail.com"
+            - name: SMTP_PORT
+              value: "587"
+            - name: SMTP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: email-credentials
+                  key: SMTP_USER
+                  optional: true
+            - name: SMTP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: email-credentials
+                  key: SMTP_PASS
+                  optional: true
+
           resources:
             requests:
               memory: "256Mi"
