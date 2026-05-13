@@ -9,9 +9,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.extractor import LLMExtractor
-from app.routes_azure import router as azure_router
 from app.pipeline import TerraformPipeline
 from app.templates import get_registry
+from app.routes_azure import router as azure_router
 
 # ── Config ───────────────────────────────────────────────────────────────────
 OLLAMA_URL      = os.getenv("OLLAMA_URL",      "http://ollama.ai-infra.svc.cluster.local:11434")
@@ -34,7 +34,7 @@ class GenerateRequest(BaseModel):
     prompt: str = Field(
         ...,
         min_length=5,
-        description="Pedido em linguagem natural descrevendo o recurso AWS.",
+        description="Pedido em linguagem natural — recurso AWS ou repositório Azure DevOps.",
         examples=["cria um bucket S3 chamado unicred-poc na us-east-1"],
     )
     model: str = Field(
@@ -47,7 +47,8 @@ class GenerateRequest(BaseModel):
         description=(
             "`plan` mostra o terraform plan sem criar recursos. "
             "`apply` cria os recursos na AWS. "
-            "`delete` destrói os recursos (auto-detectado via keywords no prompt)."
+            "`delete` destrói os recursos. "
+            "Para repositórios Azure DevOps o action é ignorado — fluxo próprio via SSE."
         ),
     )
 
@@ -66,6 +67,7 @@ class HealthResponse(BaseModel):
     status:     str  = Field(..., description="Status do serviço.")
     s3_backend: bool = Field(..., description="Backend S3 configurado.")
     aws_creds:  bool = Field(..., description="Credenciais AWS disponíveis.")
+    azure_pat:  bool = Field(..., description="PAT Azure DevOps configurado.")
     templates:  list = Field(..., description="Tipos de recursos suportados.")
 
 
@@ -75,23 +77,25 @@ app = FastAPI(
     title="aiterraform",
     description=(
         "API que combina LLM local (Ollama) com templates Terraform pré-validados "
-        "para criar, atualizar e destruir recursos AWS a partir de linguagem natural.\n\n"
-        "**Fluxo:** `prompt` → LLM extrai `{type, params}` → template gera HCL "
+        "para criar, atualizar e destruir recursos AWS e repositórios Azure DevOps "
+        "a partir de linguagem natural.\n\n"
+        "**Recursos AWS:** S3 Bucket, Lambda Function, SQS Queue\n\n"
+        "**Azure DevOps:** criação de repositórios com fluxo de aprovação por e-mail\n\n"
+        "**Fluxo Terraform:** `prompt` → LLM extrai `{type, params}` → template gera HCL "
         "→ `terraform plan/apply/destroy` → AWS\n\n"
-        "O endpoint `/generate` usa **Server-Sent Events (SSE)**. "
-        "Use `action=plan` para ver o plan antes de aplicar. "
-        "Palavras como *remover*, *deletar*, *destroy* no prompt forçam `action=delete` automaticamente."
+        "**Fluxo Azure:** `prompt` → detecta repositório → SSE `azure_request` "
+        "→ frontend coleta e-mails → `/azure/request-repo` → aprovação → `/azure/confirm-repo`"
     ),
     version="1.0.0",
     contact={
-        "name":  "Unicred DevOps",
-        "url":   "https://github.com/joaoloboguerraneto/aiterraform",
+        "name": "Unicred DevOps",
+        "url":  "https://github.com/joaoloboguerraneto/aiterraform",
     },
     openapi_tags=[
-        {"name": "infra",     "description": "Geração e aplicação de infraestrutura Terraform."},
-        {"name": "templates", "description": "Recursos AWS suportados."},
-        {"name": "system",      "description": "Health check e status."},
-        {"name": "azure-devops","description": "Criação de repositórios com fluxo de aprovação."},
+        {"name": "infra",        "description": "Geração e aplicação de infraestrutura Terraform."},
+        {"name": "templates",    "description": "Recursos AWS suportados."},
+        {"name": "azure-devops", "description": "Criação de repositórios com fluxo de aprovação."},
+        {"name": "system",       "description": "Health check e status."},
     ],
 )
 
@@ -117,6 +121,7 @@ async def health() -> HealthResponse:
         status="ok",
         s3_backend=bool(TF_STATE_BUCKET),
         aws_creds=bool(os.getenv("AWS_ACCESS_KEY_ID")),
+        azure_pat=bool(os.getenv("AZURE_DEVOPS_PAT")),
         templates=list(REGISTRY.keys()),
     )
 
@@ -126,7 +131,6 @@ async def health() -> HealthResponse:
     tags=["templates"],
     response_model=list[TemplateInfo],
     summary="Listar templates disponíveis",
-    description="Retorna todos os tipos de recursos AWS suportados.",
 )
 async def list_templates() -> list[TemplateInfo]:
     return [
@@ -138,14 +142,16 @@ async def list_templates() -> list[TemplateInfo]:
 @app.post(
     "/generate",
     tags=["infra"],
-    summary="Gerar e aplicar Terraform via linguagem natural",
+    summary="Gerar e aplicar Terraform ou detectar Azure DevOps",
     description=(
-        "Recebe prompt em linguagem natural, gera HCL via template e executa o pipeline.\n\n"
-        "Resposta em **SSE** (Server-Sent Events): cada evento é `data: {json}\\n\\n`.\n\n"
-        "**Detecção automática de intent:**\n"
-        "- Palavras como *remover*, *deletar*, *destroy* → força `action=delete`\n"
-        "- Palavras como *dead letter*, *dlq* → adiciona dead_letter=true nos params\n\n"
-        "Use `action=plan` para ver o plan, depois `action=apply` para criar."
+        "Recebe prompt em linguagem natural e executa o pipeline correto.\n\n"
+        "**Para recursos AWS** (S3, Lambda, SQS): gera HCL e executa terraform.\n\n"
+        "**Para repositórios Azure DevOps**: retorna evento SSE `azure_request` "
+        "com o nome do repositório detectado. O frontend deve então coletar "
+        "os e-mails e chamar `/azure/request-repo`.\n\n"
+        "Resposta em **SSE** (Server-Sent Events): `data: {json}\\n\\n`.\n\n"
+        "Detecção automática: palavras como *remover*, *deletar* → `action=delete`. "
+        "Palavras como *repositório*, *repo*, *azure* → fluxo Azure DevOps."
     ),
     responses={
         200: {
@@ -154,9 +160,7 @@ async def list_templates() -> list[TemplateInfo]:
                 "text/event-stream": {
                     "example": (
                         'data: {"step":"llm","msg":"Detectando recurso..."}\n\n'
-                        'data: {"step":"hcl","recurso":"S3 Bucket","resumo":"..."}\n\n'
-                        'data: {"step":"plan_out","msg":"Plan: 4 to add."}\n\n'
-                        'data: {"step":"plan_done","msg":"Plan concluido."}\n\n'
+                        'data: {"step":"azure_request","repo_name":"test-ia-unicred","org":"unicredbr","project":"TI"}\n\n'
                     ),
                 }
             },
@@ -168,43 +172,23 @@ async def generate(
         examples={
             "s3_plan": {
                 "summary": "Plan — S3 Bucket",
-                "value": {
-                    "prompt": "cria um bucket S3 chamado unicred-poc na us-east-1",
-                    "model":  "llama3.2:3b",
-                    "action": "plan",
-                },
+                "value": {"prompt": "cria um bucket S3 chamado unicred-poc na us-east-1", "model": "llama3.2:3b", "action": "plan"},
             },
             "s3_apply": {
                 "summary": "Apply — S3 Bucket",
-                "value": {
-                    "prompt": "cria um bucket S3 chamado unicred-poc na us-east-1",
-                    "model":  "llama3.2:3b",
-                    "action": "apply",
-                },
+                "value": {"prompt": "cria um bucket S3 chamado unicred-poc na us-east-1", "model": "llama3.2:3b", "action": "apply"},
             },
             "sqs_dlq": {
                 "summary": "Apply — SQS com DLQ",
-                "value": {
-                    "prompt": "fila SQS eventos-pix com dead letter queue",
-                    "model":  "llama3.2:3b",
-                    "action": "apply",
-                },
-            },
-            "delete_sqs": {
-                "summary": "Delete — SQS",
-                "value": {
-                    "prompt": "remover a fila SQS eventos-pix com dead letter queue",
-                    "model":  "llama3.2:3b",
-                    "action": "delete",
-                },
+                "value": {"prompt": "fila SQS eventos-pix com dead letter queue", "model": "llama3.2:3b", "action": "apply"},
             },
             "delete_s3": {
                 "summary": "Delete — S3",
-                "value": {
-                    "prompt": "deletar o bucket S3 unicred-poc",
-                    "model":  "llama3.2:3b",
-                    "action": "delete",
-                },
+                "value": {"prompt": "deletar o bucket S3 unicred-poc", "model": "llama3.2:3b", "action": "delete"},
+            },
+            "azure_repo": {
+                "summary": "Azure DevOps — criar repositório",
+                "value": {"prompt": "crie um repositorio test-ia-unicred", "model": "llama3.2:3b", "action": "plan"},
             },
         }
     ),
@@ -220,14 +204,10 @@ async def generate(
     tags=["templates"],
     response_model=list[FileOutput],
     summary="Renderizar template diretamente (sem LLM)",
-    description=(
-        "Renderiza HCL diretamente passando tipo e parâmetros — sem chamar o LLM. "
-        "Útil para integração programática quando o sistema chamador já conhece o tipo."
-    ),
     responses={404: {"description": "Tipo de recurso não suportado."}},
 )
 async def render(
-    resource_type: str = Body(..., description="Tipo do recurso.", examples=["s3_bucket"]),
+    resource_type: str  = Body(..., description="Tipo do recurso.", examples=["s3_bucket"]),
     params:        dict = Body(..., description="Parâmetros.", examples=[{"nome": "unicred-poc", "region": "us-east-1"}]),
 ):
     if resource_type not in REGISTRY:
@@ -259,13 +239,23 @@ async def _stream(prompt: str, model: str, action: str):
     rtype  = extracted.get("type", "")
     params = extracted.get("params", {})
 
-    # Intent de deleção no prompt sobrescreve action
+    # Intenção de deleção no prompt sobrescreve action
     if extracted.get("delete_intent") and action != "delete":
-        print(f"delete_intent detectado — forçando action=delete", flush=True)
+        print(f"delete_intent detectado — forcando action=delete", flush=True)
         action = "delete"
 
     print(f"type={rtype} params={params} action={action}", flush=True)
 
+    # ── Azure DevOps — fluxo especial sem Terraform ───────────────────────────
+    if rtype == "azure_repo":
+        repo_name = params.get("nome", "novo-repositorio")
+        org       = params.get("org", "unicredbr")
+        project   = params.get("project", "TI")
+        print(f"azure_repo: {repo_name} em {org}/{project}", flush=True)
+        yield f"data: {json.dumps({'step': 'azure_request', 'repo_name': repo_name, 'org': org, 'project': project, 'msg': 'Repositorio Azure DevOps detectado'})}\n\n"
+        return
+
+    # ── Terraform — recursos AWS ──────────────────────────────────────────────
     if rtype not in REGISTRY:
         supported = ", ".join(REGISTRY.keys())
         yield event("error", f'Tipo "{rtype}" nao suportado. Disponiveis: {supported}')
@@ -277,7 +267,7 @@ async def _stream(prompt: str, model: str, action: str):
 
     print(f"template: {data['recurso']} — {data['resumo']}", flush=True)
 
-    yield f"data: {json.dumps({'step':'hcl','files':data['arquivos'],'resumo':data['resumo'],'recurso':data['recurso']})}\n\n"
+    yield f"data: {json.dumps({'step': 'hcl', 'files': data['arquivos'], 'resumo': data['resumo'], 'recurso': data['recurso']})}\n\n"
 
     async for chunk in pipeline.run(data, action, template=tmpl):
         yield chunk
