@@ -14,6 +14,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, EmailStr
 
 from app.approvals     import approval_store
+try:
+    from app.teams_notify import notify_repo_approval_pending, notify_repo_created
+except ImportError:
+    async def notify_repo_approval_pending(*a, **k): pass
+    async def notify_repo_created(*a, **k): pass
 from app.azure_devops  import create_repository
 from app.email_sender  import send_approval_email, send_confirmation_email
 
@@ -96,6 +101,17 @@ async def request_repo(body: RepoRequest):
             )
         )
         print(f"[azure] e-mail enviado para {req.approver_email}", flush=True)
+        # Notificar canal Teams com o token (visivel para membros do canal)
+        await notify_repo_approval_pending(
+            repo_name=req.repo_name,
+            org=req.org,
+            project=req.project,
+            requester=req.requester_email,
+            approver=req.approver_email,
+            request_id=req.request_id,
+            token=req.token,
+            expires_min=req.expires_in_minutes(),
+        )
     except Exception as e:
         print(f"[azure] ERRO ao enviar e-mail: {e}", flush=True)
         raise HTTPException(
@@ -165,6 +181,13 @@ async def confirm_repo(body: RepoConfirm):
 
     approval_store.mark_executed(req.request_id)
     print(f"[azure] repositório criado: {repo['web_url']}", flush=True)
+    await notify_repo_created(
+        repo_name=repo['name'],
+        org=repo['org'],
+        project=repo['project'],
+        web_url=repo['web_url'],
+        requester=req.requester_email,
+    )
 
     # Notificar solicitante
     try:

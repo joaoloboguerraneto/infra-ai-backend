@@ -6,6 +6,13 @@ import shutil
 import uuid
 from pathlib import Path
 
+try:
+    from app.teams_notify import notify_resource_created, notify_resource_deleted, notify_error
+except ImportError:
+    async def notify_resource_created(*a, **k): pass
+    async def notify_resource_deleted(*a, **k): pass
+    async def notify_error(*a, **k): pass
+
 
 def _resolve_sqs_url(queue_name: str, region: str) -> str:
     """
@@ -238,6 +245,11 @@ class TerraformPipeline:
                         print(f"[{run_id}] DESTROY: {line}", flush=True)
                         yield event("apply_out", line)
 
+                await notify_resource_deleted(
+                    recurso=data.get('recurso','Recurso AWS'),
+                    resumo=data.get('resumo',''),
+                    state_key=state_key,
+                )
                 yield event("done", "Recurso destruido com sucesso.")
                 return
 
@@ -280,6 +292,11 @@ class TerraformPipeline:
                     print(f"[{run_id}] APPLY: {line}", flush=True)
                     yield event("apply_out", line)
 
+            await notify_resource_created(
+                recurso=data.get('recurso','Recurso AWS'),
+                resumo=data.get('resumo',''),
+                state_key=state_key,
+            )
             yield event("done",
                 f"Recurso criado! State: s3://{self.state_bucket}/{state_key}")
 
