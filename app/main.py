@@ -12,6 +12,7 @@ from app.extractor import LLMExtractor
 from app.pipeline import TerraformPipeline
 from app.templates import get_registry
 from app.routes_azure import router as azure_router
+from app.routes_teams import router as teams_router
 
 # ── Config ───────────────────────────────────────────────────────────────────
 OLLAMA_URL      = os.getenv("OLLAMA_URL",      "http://ollama.ai-infra.svc.cluster.local:11434")
@@ -100,6 +101,7 @@ app = FastAPI(
 )
 
 app.include_router(azure_router)
+app.include_router(teams_router)
 
 app.add_middleware(
     CORSMiddleware,
