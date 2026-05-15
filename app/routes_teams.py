@@ -20,6 +20,28 @@ from fastapi import APIRouter, Request
 
 router = APIRouter(prefix="/teams", tags=["teams"])
 
+# ── Deduplicação ──────────────────────────────────────────────────────────────
+# Evita processar a mesma mensagem duas vezes quando o Power Automate
+# dispara múltiplas vezes (múltiplas subscriptions Graph para o mesmo canal).
+import time as _time
+
+_SEEN: dict[str, float] = {}   # {message_fingerprint: timestamp}
+_SEEN_TTL = 30.0               # segundos — janela de deduplicação
+
+
+def _is_duplicate(fingerprint: str) -> bool:
+    """Retorna True se a mensagem já foi processada nos últimos 30s."""
+    now  = _time.time()
+    # Limpar expirados
+    for k in list(_SEEN.keys()):
+        if now - _SEEN[k] > _SEEN_TTL:
+            del _SEEN[k]
+    if fingerprint in _SEEN:
+        print(f"[teams] DUPLICATA ignorada: {fingerprint[:40]}", flush=True)
+        return True
+    _SEEN[fingerprint] = now
+    return False
+
 TEAMS_WEBHOOK_URL = os.getenv("TEAMS_WEBHOOK_URL", "")
 BACKEND_URL       = os.getenv("BACKEND_URL", "http://localhost:8080")
 OLLAMA_MODEL      = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
@@ -260,6 +282,11 @@ async def receive_message(request: Request):
             "warning",
         ))
         return {"status": "ok", "debug": "vazio", "keys": keys, "sample": sample}
+
+    # Deduplicar por fingerprint (texto + sender) — evita multiplos cards
+    fingerprint = (text[:100] + sender).strip()
+    if fingerprint and _is_duplicate(fingerprint):
+        return {"status": "ok", "debug": "duplicata_ignorada"}
 
     # Limpar HTML e mencao ao bot
     clean  = re.sub(r"<[^>]+>", "", text).strip()
