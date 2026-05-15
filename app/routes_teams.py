@@ -97,6 +97,16 @@ async def _run(prompt: str, action: str, sender: str):
                     s = ev.get("step", "")
                     if s == "hcl":
                         hcl_ev = ev
+                        # Card intermediario: LLM detectou o recurso, Terraform esta rodando
+                        recurso_nome = ev.get("recurso", "Recurso")
+                        resumo_nome  = ev.get("resumo", "")
+                        await _post_card(_card(
+                            "\u2699 " + recurso_nome + " detectado...",
+                            "**" + sender + "**, identificamos:\n\n"
+                            "> " + resumo_nome + "\n\n"
+                            "_Executando terraform apply — aguarde..._",
+                            "accent",
+                        ))
                     elif s in ("plan_out", "apply_out"):
                         msg = ev.get("msg", "")
                         if msg:
@@ -272,13 +282,12 @@ async def receive_message(request: Request):
 
     print(f"[teams] action={action} prompt={repr(prompt[:60])}", flush=True)
 
-    # Enviar card de "Processando" imediatamente — feedback ao usuário
-    action_label = {"apply": "Criando", "delete": "Destruindo", "plan": "Planejando"}
+    # Card imediato com nome do solicitante, prompt e regiao
+    action_label = {"apply": "Criando recurso", "delete": "Destruindo recurso", "plan": "Gerando plan"}
+    label = action_label.get(action, "Processando")
     asyncio.create_task(_post_card(_card(
-        f"⚙ {action_label.get(action, 'Processando')}...",
-        f"**Pedido:** {prompt[:100]}
-
-_Aguarde, o LLM está processando..._",
+        "\u2699 " + label + "...",
+        "**" + sender + "** solicitou:\n\n> " + prompt[:120] + "\n\n_Aguarde, o resultado aparece aqui._",
         "accent",
     )))
 
