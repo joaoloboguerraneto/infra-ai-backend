@@ -1,11 +1,14 @@
 """
 Integração Microsoft Teams via Power Automate + Incoming Webhook.
 
-Fluxo:
-  1. Power Automate detecta mensagem no canal Teams
-  2. POST /teams/message com o conteúdo
-  3. Backend processa via LLM + Terraform
-  4. Resultado enviado como Adaptive Card via Incoming Webhook
+Fluxo no Power Automate:
+  1. Trigger: "Quando nova mensagem adicionada"
+  2. "Obter detalhes da mensagem" (GetMessageDetails)
+  3. HTTP POST /teams/message com body:
+     {
+       "text": "@{body('Obter_detalhes_da_mensagem')?['body']?['content']}",
+       "from": "@{body('Obter_detalhes_da_mensagem')?['from']?['user']?['displayName']}"
+     }
 """
 import json
 import os
@@ -22,14 +25,14 @@ BACKEND_URL       = os.getenv("BACKEND_URL", "http://localhost:8080")
 OLLAMA_MODEL      = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 
 HELP_TEXT = (
-    "**aiterraform** — comandos disponíveis:\n\n"
+    "**aiterraform** — comandos:\n\n"
     "**AWS:**\n"
     "• `crie um bucket S3 chamado unicred-poc na us-east-1`\n"
     "• `cria uma fila SQS eventos-pix com dead letter queue`\n"
     "• `cria uma Lambda Python 3.12 processador 512MB`\n"
     "• `deletar o bucket S3 unicred-poc`\n\n"
     "**Azure DevOps:**\n"
-    "• `crie um repositorio meu-servico` _(acesse o frontend para aprovar)_"
+    "• `crie um repositorio meu-servico`"
 )
 
 
@@ -45,10 +48,10 @@ async def _post_card(card: dict) -> bool:
                 TEAMS_WEBHOOK_URL, json=card,
                 headers={"Content-Type": "application/json"},
             )
-            print(f"[teams] card enviado: {res.status_code}", flush=True)
+            print(f"[teams] card: {res.status_code}", flush=True)
             return res.status_code in (200, 202)
     except Exception as e:
-        print(f"[teams] ERRO ao enviar card: {e}", flush=True)
+        print(f"[teams] ERRO card: {e}", flush=True)
         return False
 
 
@@ -94,17 +97,18 @@ async def _run(prompt: str, action: str, sender: str):
                         ev = json.loads(line[6:])
                     except Exception:
                         continue
+
                     s = ev.get("step", "")
                     if s == "hcl":
                         hcl_ev = ev
-                        # Card intermediario: LLM detectou o recurso, Terraform esta rodando
+                        # Card intermediario: LLM detectou o recurso
                         recurso_nome = ev.get("recurso", "Recurso")
                         resumo_nome  = ev.get("resumo", "")
                         await _post_card(_card(
                             "\u2699 " + recurso_nome + " detectado...",
                             "**" + sender + "**, identificamos:\n\n"
                             "> " + resumo_nome + "\n\n"
-                            "_Executando terraform apply — aguarde..._",
+                            "_Executando terraform apply..._",
                             "accent",
                         ))
                     elif s in ("plan_out", "apply_out"):
@@ -115,8 +119,8 @@ async def _run(prompt: str, action: str, sender: str):
                         success = True
                     elif s == "azure_request":
                         await _post_card(_card(
-                            "⬡ Repositório Azure DevOps detectado",
-                            f"Repositório **{ev.get('repo_name')}** em "
+                            "\u29e1 Repositorio Azure DevOps detectado",
+                            f"Repositorio **{ev.get('repo_name')}** em "
                             f"`{ev.get('org')}/{ev.get('project')}`.\n\n"
                             "Acesse o frontend para preencher os e-mails e confirmar.",
                             "accent",
@@ -129,8 +133,8 @@ async def _run(prompt: str, action: str, sender: str):
 
     if error_msg:
         await _post_card(_card(
-            "❌ Erro — aiterraform",
-            f"**Pedido:** {prompt[:100]}\n\n**Erro:** {error_msg}",
+            "\u274c Erro — aiterraform",
+            "**Pedido:** " + prompt[:100] + "\n\n**Erro:** " + error_msg,
             "attention",
         ))
         return
@@ -147,88 +151,85 @@ async def _run(prompt: str, action: str, sender: str):
 
     if success and action == "apply":
         await _post_card(_card(
-            f"✅ Recurso criado — {recurso}",
-            f"**{resumo}**\n\nSolicitado por: {sender}\n{plan_s}",
+            "\u2705 Recurso criado — " + recurso,
+            "**" + resumo + "**\n\n"
+            + (plan_s + "\n\n" if plan_s else "")
+            + "Solicitado por: **" + sender + "**",
             "good",
         ))
     elif success and action == "delete":
         await _post_card(_card(
-            f"🗑 Recurso destruído — {recurso}",
-            f"**{resumo}**\n\nSolicitado por: {sender}",
+            "\U0001f5d1 Recurso destruido — " + recurso,
+            "**" + resumo + "**\n\nSolicitado por: **" + sender + "**",
             "warning",
         ))
     elif action == "plan":
         await _post_card(_card(
-            f"👁 Plan gerado — {recurso}",
-            f"**{resumo}**\n\n{plan_s}\n\nAcesse o frontend para aplicar.",
+            "\U0001f441 Plan gerado — " + recurso,
+            "**" + resumo + "**\n\n" + plan_s + "\n\nAcesse o frontend para aplicar.",
             "accent",
         ))
 
 
-# ── Text/sender extraction ────────────────────────────────────────────────────
+# ── Text extraction ───────────────────────────────────────────────────────────
 
 def _extract_text(body: dict) -> str:
     """
-    Extrai o texto de qualquer estrutura que o Power Automate envie.
-    Tenta todos os caminhos conhecidos do Teams trigger.
+    Extrai texto de qualquer estrutura.
+    Prioridade:
+      1. Campo "text" direto (formato {text, from})
+      2. body.content do output do "Obter detalhes da mensagem"
+      3. Campos alternativos
     """
-    # Campos diretos (string não vazia)
-    for key in ("text", "Text", "messageText", "MessageText",
-                "content", "Content", "message", "Message"):
+    # Formato direto {text, from}
+    for key in ("text", "Text", "messageText", "content", "Content", "message"):
         val = body.get(key)
         if isinstance(val, str) and val.strip():
             return val
 
-    # Campo "body" como dict
-    for body_key in ("body", "Body"):
-        sub = body.get(body_key)
-        if isinstance(sub, dict):
-            for key in ("content", "Content", "text", "Text"):
-                val = sub.get(key)
-                if isinstance(val, str) and val.strip():
-                    return val
+    # Output do "Obter detalhes" — {body: {content: "..."}, from: {...}}
+    body_field = body.get("body") or body.get("Body")
+    if isinstance(body_field, dict):
+        for key in ("content", "Content", "text", "Text"):
+            val = body_field.get(key)
+            if isinstance(val, str) and val.strip():
+                return val
 
     return ""
 
 
 def _extract_sender(body: dict) -> str:
     """Extrai nome do remetente."""
+    # Formato direto
     for key in ("from", "From", "sender", "Sender", "from_name", "displayName"):
         val = body.get(key)
         if isinstance(val, str) and val.strip():
             return val
-        if isinstance(val, dict):
-            # from.displayName
-            if isinstance(val.get("displayName"), str) and val["displayName"].strip():
-                return val["displayName"]
-            # from.user.displayName
-            user = val.get("user", {})
-            if isinstance(user, dict) and isinstance(user.get("displayName"), str):
-                return user["displayName"]
+
+    # Output do "Obter detalhes" — {from: {user: {displayName: "..."}}}
+    from_field = body.get("from") or body.get("From")
+    if isinstance(from_field, dict):
+        if isinstance(from_field.get("displayName"), str):
+            return from_field["displayName"]
+        user = from_field.get("user", {})
+        if isinstance(user, dict) and isinstance(user.get("displayName"), str):
+            return user["displayName"]
+
     return "usuario"
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+# ── Route ─────────────────────────────────────────────────────────────────────
 
-@router.post(
-    "/message",
-    summary="Recebe mensagem do Power Automate",
-    description=(
-        "Aceita POST do Power Automate com qualquer estrutura de body.\n\n"
-        "Se o campo `text` chegar vazio, retorna card de diagnóstico no Teams "
-        "mostrando os campos e valores recebidos."
-    ),
-)
+@router.post("/message", summary="Recebe mensagem do Power Automate")
 async def receive_message(request: Request):
     raw_bytes = await request.body()
     raw_str   = raw_bytes.decode("utf-8", errors="replace")
     ct        = request.headers.get("content-type", "")
 
-    # Log completo para debug
     print(f"[teams] CT={ct} LEN={len(raw_str)}", flush=True)
-    print(f"[teams] FULL_RAW={repr(raw_str[:800])}", flush=True)
+    print(f"[teams] RAW={repr(raw_str[:400])}", flush=True)
 
-    # Parse body
+    # Parse
     body = {}
     stripped = raw_str.strip()
     if stripped.startswith("{"):
@@ -240,39 +241,37 @@ async def receive_message(request: Request):
         body = {"text": stripped}
 
     print(f"[teams] KEYS={list(body.keys())}", flush=True)
-    print(f"[teams] VALS={[(k, repr(str(v)[:50])) for k, v in body.items()]}", flush=True)
 
     text   = _extract_text(body)
     sender = _extract_sender(body)
 
     print(f"[teams] text={repr(text[:80])} sender={repr(sender)}", flush=True)
 
-    # Body vazio — enviar card de diagnóstico
+    # Body vazio — card de diagnostico com instrucoes
     if not text.strip():
-        vals_preview = [(k, repr(str(v)[:40])) for k, v in body.items()]
+        keys   = list(body.keys())
+        sample = [(k, repr(str(v)[:40])) for k, v in body.items()]
         await _post_card(_card(
-            "⚠ aiterraform — mensagem vazia",
-            f"**Campos recebidos:** `{list(body.keys())}`\n\n"
-            f"**Valores:** `{vals_preview}`\n\n"
-            "Configure o Body do HTTP no Power Automate:\n"
-            '`{"text":"@{triggerBody()?[\'messageText\']}","from":"@{triggerBody()?[\'from\']?[\'user\']?[\'displayName\']}"}`',
+            "\u26a0 aiterraform — body vazio",
+            "Campos recebidos: `" + str(keys) + "`\n\n"
+            "Valores: `" + str(sample) + "`\n\n"
+            "**Corrigir o body do HTTP no Power Automate:**\n"
+            '```\n{"text":"@{body(\'Obter_detalhes_da_mensagem\')?[\'body\']?[\'content\']}","from":"@{body(\'Obter_detalhes_da_mensagem\')?[\'from\']?[\'user\']?[\'displayName\']}"}\n```',
             "warning",
         ))
-        return {
-            "status":    "ok",
-            "debug":     "body_vazio",
-            "body_keys": list(body.keys()),
-            "body_vals": vals_preview,
-        }
+        return {"status": "ok", "debug": "vazio", "keys": keys, "sample": sample}
 
-    # Limpar HTML e menção ao bot
+    # Limpar HTML e mencao ao bot
     clean  = re.sub(r"<[^>]+>", "", text).strip()
     prompt = re.sub(r"@aiterraform\s*", "", clean, flags=re.IGNORECASE).strip()
 
     if not prompt or prompt.lower() in ("ajuda", "help", "?", "comandos"):
-        asyncio.create_task(_post_card(_card("✦ aiterraform — ajuda", HELP_TEXT, "accent")))
+        asyncio.create_task(_post_card(_card(
+            "\u2736 aiterraform — ajuda", HELP_TEXT, "accent"
+        )))
         return {"status": "ok", "action": "help"}
 
+    # Detectar action
     if re.search(r"\bdelet[ae][r]?\b|\bremov[e]?[r]?\b|\bdestrui[r]?\b", prompt, re.IGNORECASE):
         action = "delete"
     elif re.search(r"\bplanejar?\b|\bver plan\b", prompt, re.IGNORECASE):
@@ -282,12 +281,17 @@ async def receive_message(request: Request):
 
     print(f"[teams] action={action} prompt={repr(prompt[:60])}", flush=True)
 
-    # Card imediato com nome do solicitante, prompt e regiao
+    # Card imediato de confirmacao
     action_label = {"apply": "Criando recurso", "delete": "Destruindo recurso", "plan": "Gerando plan"}
     label = action_label.get(action, "Processando")
+    processing_text = (
+        "**" + sender + "** solicitou:\n\n"
+        + "> " + prompt[:120] + "\n\n"
+        + "_Aguarde, o resultado aparece aqui em instantes._"
+    )
     asyncio.create_task(_post_card(_card(
         "\u2699 " + label + "...",
-        "**" + sender + "** solicitou:\n\n> " + prompt[:120] + "\n\n_Aguarde, o resultado aparece aqui._",
+        processing_text,
         "accent",
     )))
 
