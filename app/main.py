@@ -8,6 +8,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+
+import logging
+
+class HealthCheckFilter(logging.Filter):
+    """Remove /health do access log — reduz ruido nos logs."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return "/health" not in msg and "GET /health" not in msg
+
+# Aplicar filtro ao access log do uvicorn
+logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+
 from app.extractor import LLMExtractor
 from app.pipeline import TerraformPipeline
 from app.templates import get_registry
